@@ -625,8 +625,248 @@ pub fn to_chat_payload(body: &Value) -> Result<ChatPayload, BridgeError> {
     })
 }
 
+/// Response-side transform (T3): upstream chat completion → Anthropic
+/// message JSON returned to the Messages client. Pure — no I/O, no pool
+/// keys. The request model name is echoed back, not the upstream one.
+///
+/// `stop_reason` mapping: `length` → `max_tokens`; `tool_calls` or any
+/// finish reason with emitted tool_use blocks → `tool_use`; otherwise
+/// `end_turn` (fail-closed: an unknown reason with no tool blocks still
+/// reports a terminal stop).
+pub fn chat_to_message(completion: &Value, req_model: &str) -> Value {
+    let choices = completion
+        .get("choices")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let choice = choices.first();
+
+    let mut content: Vec<Value> = vec![];
+    let mut tool_call_ids: Vec<String> = vec![];
+
+    if let Some(choice) = choice {
+        let message = choice.get("message").cloned().unwrap_or(Value::Null);
+        if let Some(text) = message.get("content").and_then(Value::as_str) {
+            if !text.is_empty() {
+                content.push(json!({ "type": "text", "text": text }));
+            }
+        }
+        if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+            for (i, call) in calls.iter().enumerate() {
+                let func = call.get("function").cloned().unwrap_or(Value::Null);
+                let name = func
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let arguments = func.get("arguments").cloned().unwrap_or(Value::Null);
+                let input = match &arguments {
+                    Value::String(raw) => {
+                        serde_json::from_str(raw).unwrap_or_else(|_| arguments.clone())
+                    }
+                    Value::Null => json!({}),
+                    other => other.clone(),
+                };
+                let explicit: Option<String> = call
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string);
+                let id = match explicit {
+                    Some(id) => id,
+                    None => format!("toolu_bridge_call_{i}"),
+                };
+                tool_call_ids.push(id.clone());
+                content.push(json!({
+                    "type": "tool_use",
+                    "id": id,
+                    "name": name,
+                    "input": input
+                }));
+            }
+        }
+    }
+
+    let finish = choice
+        .and_then(|c| c.get("finish_reason"))
+        .and_then(Value::as_str);
+    let stop_reason = if finish == Some("length") {
+        "max_tokens"
+    } else if finish == Some("tool_calls") || (!tool_call_ids.is_empty() && finish != Some("stop"))
+    {
+        "tool_use"
+    } else {
+        "end_turn"
+    };
+
+    let usage = completion.get("usage").cloned().unwrap_or(Value::Null);
+    let in_tok = usage
+        .get("prompt_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let out_tok = usage
+        .get("completion_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+
+    let upstream_id = completion
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .unwrap_or("");
+    let msg_id = format!("msg_{upstream_id}");
+
+    json!({
+        "id": msg_id,
+        "type": "message",
+        "role": "assistant",
+        "model": req_model,
+        "content": content,
+        "stop_reason": stop_reason,
+        "stop_sequence": Value::Null,
+        "usage": { "input_tokens": in_tok, "output_tokens": out_tok }
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    fn cm(completion: &Value) -> Value {
+        chat_to_message(completion, "client-model")
+    }
+
+    #[test]
+    fn green_chat_to_message_minimal_text() {
+        let m = cm(&json!({
+            "id": "chatcmpl-1",
+            "model": "nim-m",
+            "choices": [{ "message": { "content": "hi" }, "finish_reason": "stop" }],
+            "usage": { "prompt_tokens": 5, "completion_tokens": 7 }
+        }));
+        assert_eq!(m["id"], "msg_chatcmpl-1");
+        assert_eq!(m["type"], "message");
+        assert_eq!(m["role"], "assistant");
+        assert_eq!(
+            m["model"], "client-model",
+            "request model echoed, not upstream"
+        );
+        assert_eq!(m["content"], json!([{ "type": "text", "text": "hi" }]));
+        assert_eq!(m["stop_reason"], "end_turn");
+        assert_eq!(m["stop_sequence"], Value::Null);
+        assert_eq!(m["usage"], json!({ "input_tokens": 5, "output_tokens": 7 }));
+    }
+
+    #[test]
+    fn green_chat_to_message_tool_calls() {
+        let m = cm(&json!({
+            "id": "chatcmpl-2",
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": { "name": "bash", "arguments": "{\"cmd\":\"ls\"}" }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        }));
+        assert_eq!(
+            m["content"],
+            json!([
+                { "type": "tool_use", "id": "call_1", "name": "bash", "input": { "cmd": "ls" } }
+            ])
+        );
+        assert_eq!(m["stop_reason"], "tool_use");
+    }
+
+    #[test]
+    fn green_chat_to_message_length_maps_to_max_tokens() {
+        let m = cm(&json!({
+            "choices": [{ "message": { "content": "trunc" }, "finish_reason": "length" }]
+        }));
+        assert_eq!(m["stop_reason"], "max_tokens");
+    }
+
+    #[test]
+    fn green_chat_to_message_bad_arguments_preserved_as_string() {
+        let m = cm(&json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{ "id": "c", "function": { "name": "f", "arguments": "oops" } }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        }));
+        assert_eq!(m["content"][0]["type"], "tool_use");
+        assert_eq!(
+            m["content"][0]["input"], "oops",
+            "unparseable arguments kept as the raw string"
+        );
+    }
+
+    #[test]
+    fn green_chat_to_message_missing_usage_is_zero() {
+        let m =
+            cm(&json!({ "choices": [{ "message": { "content": "x" }, "finish_reason": "stop" }] }));
+        assert_eq!(m["usage"], json!({ "input_tokens": 0, "output_tokens": 0 }));
+    }
+
+    #[test]
+    fn green_chat_to_message_missing_upstream_id_fallback() {
+        let m =
+            cm(&json!({ "choices": [{ "message": { "content": "x" }, "finish_reason": "stop" }] }));
+        assert_eq!(
+            m["id"], "msg_",
+            "deterministic fallback when upstream omits the id"
+        );
+    }
+
+    #[test]
+    fn green_chat_to_message_text_and_tool_calls_both() {
+        let m = cm(&json!({
+            "choices": [{
+                "message": {
+                    "content": "running now",
+                    "tool_calls": [{ "id": "c2", "function": { "name": "f", "arguments": "1" } }]
+                },
+                "finish_reason": "content_filter"
+            }]
+        }));
+        assert_eq!(
+            m["content"][0],
+            json!({ "type": "text", "text": "running now" })
+        );
+        assert_eq!(m["content"][1]["type"], "tool_use");
+        assert_eq!(m["content"][1]["input"], 1);
+        // unknown finish_reason with tool_use blocks present resolves to tool_use
+        assert_eq!(m["stop_reason"], "tool_use");
+    }
+
+    #[test]
+    fn green_chat_to_message_no_choices_is_empty_message() {
+        let m = cm(&json!({ "id": "u", "choices": [] }));
+        assert_eq!(m["content"], json!([]));
+        assert_eq!(m["stop_reason"], "end_turn");
+    }
+
+    #[test]
+    fn green_chat_to_message_call_id_normalized() {
+        let m = cm(&json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [
+                        { "function": { "name": "a", "arguments": "{}" } },
+                        { "id": "", "function": { "name": "b", "arguments": "{}" } }
+                    ]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        }));
+        assert_eq!(m["content"][0]["id"], "toolu_bridge_call_0");
+        assert_eq!(m["content"][1]["id"], "toolu_bridge_call_1");
+    }
+
     use super::*;
 
     fn conv(body: &Value) -> ChatPayload {
