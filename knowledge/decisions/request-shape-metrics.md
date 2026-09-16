@@ -51,6 +51,35 @@ Option 3. New metrics, split by the label that makes them useful:
   including its head-to-head scorecard section.
 - **Global enum** — `nimproxy_tool_choice_total` `{mode}`.
 
+## Addendum: endpoint label and tool-type counter (Messages bridge)
+
+When the Anthropic Messages bridge (`POST /v1/messages`, see
+[trust-boundary map](../architecture/http-trust-boundary-map.md)) landed,
+the shape family had to be attributable to the surface that produced it, or
+the dashboard could not distinguish an OpenCode OpenAI session from an
+Anthropic-native harness.
+
+- The whole request-shape family gains a frozen `endpoint` label: `chat`
+  (every pre-existing series now carries it) and `messages` (the bridge).
+  `nimproxy_stream_requests_total` becomes
+  `{client, endpoint, stream}`; `nimproxy_tool_choice_total` becomes
+  `{endpoint, mode}`; `nimproxy_json_mode_total` becomes `{client, endpoint}`;
+  the request histogram family gains `{client, endpoint}`. Existing series
+  change shape (a new label dimension) — the rename note for
+  `nimproxy_lane_benched_total` is the precedent.
+- A new counter `nimproxy_tool_type_total` counts offered tool families over
+  a frozen vocabulary — `bash`, `text_editor`, `memory`, `web_search`,
+  `computer`, `custom` — plus `server_rejected` for a bridge request that
+  asked for a server tool the pipeline will never see. Offered tool families
+  are read off the converted chat payload, so the same count lands on both
+  endpoints; `server_rejected` fires exactly once, on the rejected bridge
+  request.
+- The bridge's proxy-own `gateway_timeout` re-maps the upstream 504 into a
+  504 with proxy code `rate_limited`: a deadline cut by the proxy is a
+  pacing-class failure for the client, and the client's retry semantics key
+  off that code. Upstream re-shape-mapping keeps the status but never the
+  proxy code.
+
 Request shape is read from the already-parsed body at `Ctx` construction, so no
 second deserialize. Response quality uses the private typed
 [NIM observations](../architecture/nim-observations.md) component for both

@@ -361,6 +361,14 @@ const ROUTES: &[RouteContract] = &[
     },
     RouteContract {
         access: Access::Client,
+        method: "POST",
+        openapi: true,
+        path: MESSAGES,
+        phase: Phase::PostSetup,
+        probe_path: MESSAGES,
+    },
+    RouteContract {
+        access: Access::Client,
         method: "ANY",
         openapi: false,
         path: V1_WILDCARD,
@@ -423,7 +431,7 @@ mod tests {
             serde_json::from_str(&crate::api::openapi_json()).expect("generated OpenAPI JSON");
         let paths = spec["paths"].as_object().expect("OpenAPI paths");
 
-        assert_eq!(ROUTES.len(), 36, "route-contract:inventory");
+        assert_eq!(ROUTES.len(), 37, "route-contract:inventory");
         assert_eq!(
             ROUTES
                 .iter()
@@ -470,7 +478,7 @@ mod tests {
                 .iter()
                 .filter(|route| route.phase == Phase::PostSetup)
                 .count(),
-            23,
+            24,
             "route-contract:phase: operator, operator assets, and client routes"
         );
         assert!(
@@ -508,7 +516,21 @@ mod tests {
                     );
                 }
                 Access::Client => {
-                    panic!("route-contract:openapi: /v1 is upstream-owned and must stay omitted")
+                    // The bridge is the one client-owned operation in the spec:
+                    // every other /v1 path stays upstream-owned and out.
+                    assert_eq!(
+                        route.path, MESSAGES,
+                        "route-contract:openapi: client route {} must be the Messages bridge",
+                        route.path
+                    );
+                    let security = operation["security"]
+                        .as_array()
+                        .expect("the bridge documents its client_key security");
+                    assert_eq!(
+                        security,
+                        &[serde_json::json!({"client_key": []})],
+                        "route-contract:openapi: the bridge must require client_key"
+                    );
                 }
             }
         }

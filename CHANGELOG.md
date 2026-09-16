@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New `POST /v1/messages` Anthropic-compatible bridge: requests are converted
+  to the OpenAI chat dialect, paced through the shared key pool exactly like
+  the `/v1` passthrough, and answered in the Anthropic dialect. Non-2xx
+  upstream statuses are re-shape-mapped into the Anthropic error envelope with
+  the same status code; existing `/v1/*` wire behavior is unchanged.
+- The request-shape metric family gains an `endpoint` label (`chat`,
+  `messages`): every pre-existing series changes shape (a new label
+  dimension), and the new `nimproxy_tool_type_total` counter counts offered
+  tool families plus `server_rejected` offers.
+- The OpenAPI spec gains the `createAnthropicMessage` operation, a `client_key`
+  security scheme, and the `messages` tag — additions only; the
+  `anthropicSSEStream` operation arrives with the streaming translator.
+
 ### Fixed
 
 - Installed locale definitions now jointly drive locale bootstrap, public and

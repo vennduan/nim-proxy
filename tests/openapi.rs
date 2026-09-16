@@ -69,8 +69,8 @@ fn spec_is_usable() {
         .map(|item| item.as_object().expect("path item").len())
         .sum();
     assert_eq!(
-        operation_count, 17,
-        "15 /api/* operations + the 2 setup operations"
+        operation_count, 18,
+        "15 /api/* operations + the 2 setup operations + the Messages bridge"
     );
     assert_eq!(
         paths["/api/locale-bootstrap"]["get"]["security"]
@@ -107,12 +107,20 @@ fn spec_is_usable() {
             );
             // The setup routes sit outside the session guard and say so with
             // an explicit empty `security` list; /api/* routes carry none of
-            // their own and so inherit the document-level requirement.
+            // their own and so inherit the document-level requirement. The
+            // Messages bridge authenticates the *client*, not the operator:
+            // it names `client_key` explicitly instead of inheriting.
             if path == "/api/locale-bootstrap" {
                 assert_eq!(
                     op["security"].as_array().map(Vec::len),
                     Some(0),
                     "{label}: locale bootstrap is public by design"
+                );
+            } else if path == "/v1/messages" {
+                assert_eq!(
+                    op.get("security"),
+                    Some(&serde_json::json!([{"client_key": []}])),
+                    "{label}: the bridge must require the client_key scheme"
                 );
             } else if path.starts_with("/api/") {
                 assert!(
@@ -131,6 +139,11 @@ fn spec_is_usable() {
 
     for (path, item) in paths {
         for (method, op) in item.as_object().expect("path item") {
+            // The bridge error envelope is Anthropic-shaped, not the proxy
+            // ApiError — its non-2xx responses are free-form on purpose.
+            if path == "/v1/messages" {
+                continue;
+            }
             for (status, response) in op["responses"].as_object().expect("responses") {
                 if status.starts_with('2') {
                     continue;
@@ -434,4 +447,66 @@ fn global_security_self_test_names_wrong_requirement() {
         serde_json::from_str(&nim_proxy::openapi_json()).expect("generated OpenAPI");
     spec["security"] = serde_json::json!([{"wrong_scheme": []}]);
     assert_global_security(&spec);
+}
+
+#[test]
+fn messages_bridge_op_is_documented_with_client_key_security() {
+    let spec: serde_json::Value =
+        serde_json::from_str(&nim_proxy::openapi_json()).expect("the spec is JSON");
+
+    let operation = &spec["paths"]["/v1/messages"]["post"];
+    assert_eq!(
+        operation["operationId"], "createAnthropicMessage",
+        "messages-openapi: the bridge operation keeps its stable id"
+    );
+    assert_eq!(
+        operation["tags"],
+        serde_json::json!(["messages"]),
+        "messages-openapi: the bridge carries the messages tag"
+    );
+    let doc_tags = spec["tags"].as_array().expect("tag list");
+    assert!(
+        doc_tags.iter().any(|tag| tag["name"] == "messages"),
+        "messages-openapi: the messages tag is declared at document level"
+    );
+
+    let scheme = &spec["components"]["securitySchemes"]["client_key"];
+    assert_eq!(scheme["type"], "http");
+    assert_eq!(scheme["scheme"], "bearer");
+
+    let body = &operation["requestBody"]["content"]["application/json"]["schema"];
+    assert_eq!(body["type"], "object");
+    assert_eq!(
+        body["required"],
+        serde_json::json!(["model"]),
+        "messages-openapi: model is the only required request field"
+    );
+    assert!(body["properties"].get("model").is_some());
+
+    let ok = &operation["responses"]["200"];
+    assert_eq!(
+        ok["content"].as_object().expect("200 content map").len(),
+        2,
+        "messages-openapi: the one operation documents both content types"
+    );
+    assert!(ok["content"].get("application/json").is_some());
+    assert!(ok["content"].get("text/event-stream").is_some());
+    let message = &ok["content"]["application/json"]["schema"];
+    assert_eq!(message["type"], "object");
+    assert_eq!(
+        message["properties"]["stop_reason"]["enum"],
+        serde_json::json!(["end_turn", "max_tokens", "tool_use"]),
+        "messages-openapi: stop_reason is the Anthropic vocabulary"
+    );
+
+    // Non-2xx responses are the Anthropic-shaped envelope, not ApiError.
+    for status in ["400", "401", "429", "502", "503", "504"] {
+        let response = &operation["responses"][status];
+        assert!(
+            !response["content"]["application/json"]["schema"]
+                .get("$ref")
+                .is_some(),
+            "{status}: bridge errors are Anthropic-shaped, not a schema reference"
+        );
+    }
 }

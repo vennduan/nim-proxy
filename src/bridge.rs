@@ -58,14 +58,21 @@ pub struct ThinkingMeta {
 pub struct ChatPayload {
     /// The OpenAI chat-completions request body to send upstream.
     pub json: Value,
+    // Forward-looking fields: the streaming translator (T6), the client tool
+    // schemas (T7), and thinking validation (T8) consume these. T4 routes on
+    // `json`/`tool_meta` only, so they stay unread in the lib build for now.
+    #[allow(dead_code)]
     /// Normalized OpenAI function tool definitions.
     pub tools: Vec<Value>,
     /// Family per entry of `tools`, in order.
     pub tool_meta: Vec<ToolMeta>,
+    #[allow(dead_code)]
     /// Mapped `tool_choice`, if present.
     pub tool_choice: Option<Value>,
+    #[allow(dead_code)]
     /// `true` when `tool_choice` forces a specific tool.
     pub forced_tool: bool,
+    #[allow(dead_code)]
     pub thinking: ThinkingMeta,
 }
 
@@ -282,17 +289,17 @@ fn tool_family(tool_type: Option<&str>) -> ToolFamily {
 /// not dropped or mislabeled `custom`. A missing/`custom` type is fine —
 /// that is an ordinary client tool.
 fn check_unknown_tool_type(tool_type: Option<&str>) -> Result<(), BridgeError> {
-    let known = tool_type.is_some_and(|t| {
-        t.starts_with("bash_")
+    if let Some(t) = tool_type {
+        let known = t.starts_with("bash_")
             || t.starts_with("text_editor_")
             || t.starts_with("memory_")
             || t.starts_with("computer_")
             || t.starts_with("web_search_")
             || t.starts_with("web_fetch_")
-            || t == "custom"
-    });
-    if tool_type.is_some() && !known {
-        return Err(reject_server_tool(tool_type.expect("guarded by is_some")));
+            || t == "custom";
+        if !known {
+            return Err(reject_server_tool(t));
+        }
     }
     Ok(())
 }
@@ -558,9 +565,7 @@ pub fn to_chat_payload(body: &Value) -> Result<ChatPayload, BridgeError> {
         };
         let tool_type = tool.get("type").and_then(Value::as_str);
         if matches!(tool_type, Some("mcp_toolset") | Some("mcp")) {
-            return Err(reject_server_tool(
-                tool_type.unwrap_or_else(|| "mcp_toolset"),
-            ));
+            return Err(reject_server_tool(tool_type.unwrap_or("mcp_toolset")));
         }
         check_unknown_tool_type(tool_type)?;
         check_allowed_callers(tool.get("allowed_callers"))?;
@@ -605,6 +610,9 @@ pub fn to_chat_payload(body: &Value) -> Result<ChatPayload, BridgeError> {
     if let Some(v) = body.get("stop_sequences").filter(|v| !v.is_null()) {
         payload["stop"] = v.clone();
     }
+    if let Some(v) = body.get("stream").filter(|v| !v.is_null()) {
+        payload["stream"] = v.clone();
+    }
     if let Some(v) = body.get("seed").filter(|v| !v.is_null()) {
         payload["seed"] = v.clone();
     }
@@ -613,6 +621,23 @@ pub fn to_chat_payload(body: &Value) -> Result<ChatPayload, BridgeError> {
     }
     if let Some(tc) = &tool_choice {
         payload["tool_choice"] = tc.clone();
+    }
+    // `parallel_tool_use` is a top-level request field;
+    // `tool_choice.disable_parallel_tool_use` inverts onto OpenAI's
+    // `parallel_tool_calls`. Emitted only when tools are offered.
+    if !tools.is_empty() {
+        let parallel = body
+            .get("parallel_tool_use")
+            .and_then(Value::as_bool)
+            .or_else(|| {
+                body.get("tool_choice")
+                    .and_then(|tc| tc.get("disable_parallel_tool_use"))
+                    .and_then(Value::as_bool)
+                    .map(|disabled| !disabled)
+            });
+        if let Some(p) = parallel {
+            payload["parallel_tool_calls"] = json!(p);
+        }
     }
 
     Ok(ChatPayload {
@@ -1276,6 +1301,43 @@ mod tests {
         assert!(p.thinking.enabled);
         assert_eq!(p.thinking.budget_tokens, Some(256));
         assert!(p.json.get("thinking").is_none());
+    }
+
+    #[test]
+    fn green_stream_flag_passes_through() {
+        let p = conv(&json!({ "model": "m", "stream": true, "messages": [] }));
+        assert_eq!(p.json["stream"], true);
+
+        let p = conv(&json!({ "model": "m", "stream": false, "messages": [] }));
+        assert_eq!(p.json["stream"], false);
+
+        let p = conv(&json!({ "model": "m", "messages": [] }));
+        assert!(p.json.get("stream").is_none());
+    }
+
+    #[test]
+    fn green_parallel_tool_use_maps_to_openai() {
+        let p = conv(&json!({
+            "model": "m",
+            "tools": [{ "name": "f" }],
+            "parallel_tool_use": true,
+            "messages": []
+        }));
+        assert_eq!(p.json["parallel_tool_calls"], true);
+
+        let p = conv(&json!({
+            "model": "m",
+            "tools": [{ "name": "f" }],
+            "tool_choice": { "type": "auto", "disable_parallel_tool_use": true },
+            "messages": []
+        }));
+        assert_eq!(p.json["parallel_tool_calls"], false);
+    }
+
+    #[test]
+    fn green_parallel_tool_use_ignored_without_tools() {
+        let p = conv(&json!({ "model": "m", "parallel_tool_use": true, "messages": [] }));
+        assert!(p.json.get("parallel_tool_calls").is_none());
     }
 
     #[test]
