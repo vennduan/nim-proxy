@@ -3440,23 +3440,24 @@ async fn messages_bridge_converts_paces_and_maps_back() {
     // The request must have reached the mock as a converted OpenAI chat: the
     // mock routes only `/v1/chat/completions`, so a 200 already proves the
     // rewrite; assert the wire shape the mock recorded.
-    let hits = mock.state.hits.lock().unwrap();
-    assert_eq!(hits.len(), 1, "exactly one upstream call: {hits:?}");
-    let hit = &hits[0];
-    assert_eq!(hit.body["model"], "mock/model-a", "{hit:?}");
-    assert_eq!(hit.body["max_tokens"], 64, "{hit:?}");
-    let messages = hit.body["messages"].as_array().expect("chat messages");
-    assert_eq!(
-        messages[0],
-        serde_json::json!({"role": "system", "content": "you are a bridge test"}),
-        "system prompt converted to a chat system message: {hit:?}"
-    );
-    assert_eq!(
-        messages[1],
-        serde_json::json!({"role": "user", "content": "bridge success"}),
-        "text blocks flattened to chat user content: {hit:?}"
-    );
-    drop(hits);
+    {
+        let hits = mock.state.hits.lock().unwrap();
+        assert_eq!(hits.len(), 1, "exactly one upstream call: {hits:?}");
+        let hit = &hits[0];
+        assert_eq!(hit.body["model"], "mock/model-a", "{hit:?}");
+        assert_eq!(hit.body["max_tokens"], 64, "{hit:?}");
+        let messages = hit.body["messages"].as_array().expect("chat messages");
+        assert_eq!(
+            messages[0],
+            serde_json::json!({"role": "system", "content": "you are a bridge test"}),
+            "system prompt converted to a chat system message: {hit:?}"
+        );
+        assert_eq!(
+            messages[1],
+            serde_json::json!({"role": "user", "content": "bridge success"}),
+            "text blocks flattened to chat user content: {hit:?}"
+        );
+    }
 
     // The bridge's request shape lands on the messages endpoint label.
     let metrics = metrics(&proxy).await;

@@ -503,9 +503,9 @@ fn messages_bridge_op_is_documented_with_client_key_security() {
     for status in ["400", "401", "429", "502", "503", "504"] {
         let response = &operation["responses"][status];
         assert!(
-            !response["content"]["application/json"]["schema"]
+            response["content"]["application/json"]["schema"]
                 .get("$ref")
-                .is_some(),
+                .is_none(),
             "{status}: bridge errors are Anthropic-shaped, not a schema reference"
         );
     }
