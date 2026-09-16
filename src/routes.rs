@@ -44,6 +44,9 @@ pub const LOGOUT: &str = "/logout";
 pub const SETUP: &str = "/setup";
 pub const SETUP_VALIDATE_KEY: &str = "/setup/validate-key";
 pub const V1_WILDCARD: &str = "/v1/{*path}";
+/// The Anthropic Messages bridge: registered ahead of the /v1 wildcard so the
+/// OpenAI-wire `/v1/chat/completions` stays untouched on every other path.
+pub const MESSAGES: &str = "/v1/messages";
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
