@@ -20,7 +20,9 @@ asset routes. A
 superuser has no exclusive route: it has admin endpoint power plus the
 undeletable/undemotable account invariant. `OperatorSuperuser` exists so a
 future exclusive boundary must be declared deliberately, not inferred from
-the role name.
+the role name. One scheduled row (the Messages bridge, marked *(scheduled)*)
+records the contracted boundary ahead of implementation; it is not yet
+registered in `src/routes.rs` and is excluded from the 35.
 
 ## Contract matrix
 
@@ -86,6 +88,7 @@ not a second copy here.
 | `POST /setup` | First operator | Public | Pre-setup | None; shared pre-auth throttle; first complete claim wins | JSON or form URL encoded | JSON + session cookie, or native redirect + session cookie | `weak_password`, `invalid_config`, `setup_complete`, `throttled` | Success creates config bytes and sets a session cookie; throttled requests stop before PBKDF2 and leave config unchanged | Setup wizard finish | Yes, explicit no security | B, M |
 | `POST /setup/validate-key` | First operator | Public | Pre-setup | None; pre-auth throttle | JSON | JSON | `invalid_base_url`, `throttled`, `setup_complete` | Success makes one upstream call; config unchanged | Setup wizard key step | Yes, explicit no security | B, M |
 | `ANY /v1/{*path}` (`POST /v1/chat/completions` probe) | OpenAI-compatible client | Client boundary: keyed private or explicitly open trusted-network mode | Post-setup | Client bearer in keyed mode; none in open mode | Upstream-owned bytes | Upstream content type or locally framed SSE | `setup_required`, `unauthorized`, `invalid_deadline`, `overloaded`, transport codes | Success makes one upstream call; config unchanged | External agent harness | No: upstream owns schema | B, C, M |
+| `POST /v1/messages` *(scheduled)* | Anthropic-compatible client | Client boundary: keyed private or explicitly open trusted-network mode | Post-setup | Client bearer in keyed mode; none in open mode | Locally owned Anthropic Messages JSON (`messages`, `system`, `tools`, `tool_choice`, `thinking`, `max_tokens`) | Locally owned Anthropic message JSON or locally framed Anthropic SSE (`text/event-stream`) | `setup_required`, `unauthorized`, `invalid_deadline`, `overloaded`, typed 400 for unsupported server tools; upstream 4xx/5xx re-shape-mapped into the Anthropic error envelope | Success runs the full pipeline (model permit, slot, retry/failover, heartbeats) against one upstream `POST /v1/chat/completions` call; config unchanged | Anthropic-native agent harness | Yes: adds the `createAnthropicMessage` and `anthropicSSEStream` operations (additions only; see `docs/plans/anthropic-messages-bridge.md`) | B, C, M |
 
 ## Boundary ownership
 
