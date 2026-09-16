@@ -1,5 +1,6 @@
 mod api;
 mod auth;
+mod bridge;
 mod config;
 mod dispatch;
 mod governor;
