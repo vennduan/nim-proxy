@@ -1223,6 +1223,29 @@
                                 ]
                               }
                             }
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "type",
+                              "thinking",
+                              "signature"
+                            ],
+                            "properties": {
+                              "signature": {
+                                "type": "string",
+                                "description": "A synthetic `nimthinking_`-prefixed identity marker for the block; it is not a cryptographic attestation of the thinking."
+                              },
+                              "thinking": {
+                                "type": "string"
+                              },
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "thinking"
+                                ]
+                              }
+                            }
                           }
                         ]
                       }
