@@ -572,9 +572,7 @@ pub fn resolve_thinking(
                 Some(t) => {
                     return Err(invalid(
                         "invalid_thinking",
-                        &format!(
-                            "thinking.type only supports enabled or disabled, got {t:?}"
-                        ),
+                        &format!("thinking.type only supports enabled or disabled, got {t:?}"),
                     ))
                 }
                 None => o.get("enabled").and_then(Value::as_bool).unwrap_or(false),
@@ -2273,6 +2271,142 @@ mod tests {
             }]),
             "the round-trip reproduces the tool_use block (plus the caller echo)"
         );
+    }
+
+    #[test]
+    fn green_multi_turn_tool_round_trip_preserves_ordering() {
+        // Anthropic -> chat: 3 parallel calls, results out of order (with a
+        // block-array + is_error result), suffixed tool_result variants.
+        let anthropic = json!({
+            "model": "m",
+            "max_tokens": 1024,
+            "tools": [
+                {"type": "bash_20250124", "name": "bash"},
+                {"name": "read_file"},
+                {"name": "write_file"}
+            ],
+            "messages": [
+              { "role": "user", "content": "list and read" },
+              { "role": "assistant", "content": [
+                  { "type": "text", "text": "running three" },
+                  { "type": "tool_use", "id": "toolu_a", "name": "bash", "input": {"command": "ls"} },
+                  { "type": "tool_use", "id": "toolu_b", "name": "read_file", "input": {"path": "a"} },
+                  { "type": "tool_use", "id": "toolu_c", "name": "write_file", "input": {"path": "b", "text": "x"} }
+              ]},
+              { "role": "user", "content": [
+                  // Out of order: c first, as a block array with is_error.
+                  { "type": "write_file_tool_result", "tool_use_id": "toolu_c",
+                    "content": [{"type": "text", "text": "write failed"}, {"type": "text", "text": "disk full"}],
+                    "is_error": true },
+                  { "type": "tool_result", "tool_use_id": "toolu_a", "content": "a\nb" },
+                  { "type": "tool_result", "tool_use_id": "toolu_b", "content": "file contents" }
+              ]}
+            ]
+        });
+        let payload = conv(&anthropic);
+        let msgs = payload.json["messages"].as_array().expect("chat messages");
+        assert_eq!(msgs.len(), 5, "{msgs:?}");
+        // Layout: user, assistant+tool_calls, tool, tool, tool — the results
+        // out of request order stay in sequence.
+        let roles: Vec<&str> = msgs.iter().map(|m| m["role"].as_str().unwrap()).collect();
+        assert_eq!(
+            roles,
+            ["user", "assistant", "tool", "tool", "tool"],
+            "{msgs:?}"
+        );
+        let calls = msgs[1]["tool_calls"].as_array().expect("calls");
+        assert_eq!(
+            calls
+                .iter()
+                .map(|c| c["function"]["name"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["bash", "read_file", "write_file"],
+            "parallel calls keep their request order"
+        );
+        let tool_msgs = msgs[2..].to_vec();
+        let ids: Vec<&str> = tool_msgs
+            .iter()
+            .map(|m| m["tool_call_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            ["toolu_c", "toolu_a", "toolu_b"],
+            "results keep their out-of-order sequence: {msgs:?}"
+        );
+        assert_eq!(
+            tool_msgs[0]["content"], "tool returned an error: write failed\ndisk full",
+            "block-array content folds; is_error prefixes: {msgs:?}"
+        );
+        assert_eq!(tool_msgs[1]["content"], "a\nb");
+        assert_eq!(tool_msgs[2]["content"], "file contents");
+
+        // chat -> Anthropic: the follow-up completion's three calls round-trip.
+        let completion = json!({
+            "id": "chatcmpl-multi",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "again",
+                    "tool_calls": [
+                        {"id": "toolu_a", "type": "function", "function": {"name": "bash", "arguments": "{\"command\":\"ls\"}"}},
+                        {"id": "toolu_b", "type": "function", "function": {"name": "read_file", "arguments": "{\"path\":\"a\"}"}},
+                        {"id": "toolu_c", "type": "function", "function": {"name": "write_file", "arguments": "{\"path\":\"b\"}"}}
+                    ]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {"prompt_tokens": 9, "completion_tokens": 3}
+        });
+        let m = chat_to_message(&completion, "client-model", &payload.tool_meta);
+        assert_eq!(m["role"], "assistant");
+        assert_eq!(m["stop_reason"], "tool_use");
+        let blocks = m["content"].as_array().expect("content");
+        assert_eq!(blocks.len(), 4, "text plus the three tool_use blocks: {m}");
+        assert_eq!(blocks[0], json!({"type": "text", "text": "again"}));
+        for (block, id, name) in [
+            (1, "toolu_a", "bash"),
+            (2, "toolu_b", "read_file"),
+            (3, "toolu_c", "write_file"),
+        ] {
+            assert_eq!(blocks[block]["type"], "tool_use");
+            assert_eq!(blocks[block]["id"], id, "ids preserved in order");
+            assert_eq!(blocks[block]["name"], name);
+            assert_eq!(
+                blocks[block]["caller"],
+                json!({"type": "direct"}),
+                "all three were client offers"
+            );
+        }
+        // And feed the emitted assistant message straight back through:
+        // tool_result pairing by id must be identity (stateless round-trip).
+        let back = conv(&json!({
+            "model": "m",
+            "messages": [
+              { "role": "user", "content": "list and read" },
+              m.clone(),
+              { "role": "user", "content": [
+                  { "type": "tool_result", "tool_use_id": "toolu_c", "content": "ok now" },
+                  { "type": "tool_result", "tool_use_id": "toolu_a", "content": "c1" },
+                  { "type": "tool_result", "tool_use_id": "toolu_b", "content": "c2" }
+              ]}
+            ]
+        }));
+        let back_msgs = back.json["messages"].as_array().expect("messages");
+        let assistant = back_msgs
+            .iter()
+            .find(|x| x["role"] == "assistant")
+            .expect("assistant");
+        assert_eq!(
+            assistant["tool_calls"].as_array().map(|c| c.len()),
+            Some(3),
+            "the emitted tool_use blocks convert back to three calls"
+        );
+        let tool_ids: Vec<&str> = back_msgs
+            .iter()
+            .filter(|x| x["role"] == "tool")
+            .map(|x| x["tool_call_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(tool_ids, ["toolu_c", "toolu_a", "toolu_b"]);
     }
 
     #[test]
