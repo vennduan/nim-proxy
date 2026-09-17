@@ -3469,6 +3469,84 @@ async fn messages_bridge_converts_paces_and_maps_back() {
     );
 }
 
+/// A client tool offer without name, description, or input_schema reaches
+/// the upstream with the generated OpenAI function schema and catalog copy,
+/// and the response echoes `caller: {"type": "direct"}` on the tool_use.
+#[tokio::test]
+async fn messages_bridge_client_tool_schemas_echo_direct_caller() {
+    let mock = start_mock().await;
+    let proxy = start_proxy(&mock.url, &[]).await;
+
+    let response = client()
+        .post(proxy.url("/v1/messages"))
+        .json(
+            &serde_json::json!({
+                "model": "mock/model-a",
+                "max_tokens": 64,
+                "tools": [
+                    // Explicit name rides the wire; the generated bash schema
+                    // and catalog description fill in the rest.
+                    {"type": "bash_20250124", "name": "get_weather"},
+                    // Unnamed computer offer: family default name + schema.
+                    {"type": "computer_use_20251124"}
+                ],
+                "messages": [{"role": "user", "content": "run it"}]
+            }),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "bridge success: {response:?}");
+    let message: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(message["type"], "message", "{message}");
+    let tool_use = &message["content"][0];
+    assert_eq!(tool_use["type"], "tool_use", "{message}");
+    assert_eq!(tool_use["name"], "get_weather", "{message}");
+    assert_eq!(
+        tool_use["caller"],
+        serde_json::json!({"type": "direct"}),
+        "the offered client tool echoes the direct caller: {message}"
+    );
+    assert_eq!(message["stop_reason"], "tool_use", "{message}");
+
+    {
+        let hits = mock.state.hits.lock().unwrap();
+        let hit = &hits[0];
+        let tools = hit.body["tools"].as_array().expect("generated tools");
+        assert_eq!(tools.len(), 2, "{hit:?}");
+        assert_eq!(tools[0]["function"]["name"], "get_weather");
+        let bash_props = tools[0]["function"]["parameters"]["properties"]
+            .as_object()
+            .expect("bash properties");
+        assert!(bash_props.contains_key("command") && bash_props.contains_key("restart"));
+        assert_eq!(
+            tools[0]["function"]["description"],
+            "Execute shell commands in a persistent bash session.",
+            "catalog copy fills in when the offer carries none: {hit:?}"
+        );
+        // The unnamed offer gets the family default name and the zoom-era
+        // computer schema.
+        assert_eq!(tools[1]["function"]["name"], "computer");
+        let actions = tools[1]["function"]["parameters"]["properties"]["action"]["enum"]
+            .as_array()
+            .expect("action enum");
+        assert!(
+            actions.iter().any(|a| a == "zoom"),
+            "computer_use_20251124 carries the zoom action: {actions:?}"
+        );
+    }
+
+    let metrics = metrics(&proxy).await;
+    assert!(
+        metrics.contains(r#"nimproxy_tool_type_total{type="bash"} 1"#),
+        "the bash offer counts on the frozen vocabulary: {metrics}"
+    );
+    assert!(
+        metrics.contains(r#"nimproxy_tool_type_total{type="computer"} 1"#),
+        "{metrics}"
+    );
+}
+
 #[tokio::test]
 async fn messages_bridge_maps_failures_into_anthropic_envelopes() {
     let mock = start_mock().await;

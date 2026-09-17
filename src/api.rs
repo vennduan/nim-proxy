@@ -645,6 +645,15 @@ fn message_response_schema() -> Object {
         .property("id", String::schema())
         .property("name", String::schema())
         .property("input", serde_json::Value::schema())
+        .property(
+            "caller",
+            ObjectBuilder::new()
+                .description(Some(
+                    "Present when the tool runs client-side: {\"type\": \"direct\"}.",
+                ))
+                .property("type", string_enum(&["direct"]))
+                .build(),
+        )
         .build();
     let usage = ObjectBuilder::new()
         .required("input_tokens")
