@@ -52,6 +52,7 @@ pub enum Behavior {
     ExactResponse { content_type: String, body: String },
 }
 
+#[derive(Debug)]
 pub struct Hit {
     pub key: String,
     pub body: serde_json::Value,

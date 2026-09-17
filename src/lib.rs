@@ -719,6 +719,9 @@ pub async fn run() {
             routes::SETUP_VALIDATE_KEY,
             post(settings::setup_validate_key),
         )
+        // The Anthropic Messages bridge: registered ahead of the /v1 wildcard
+        // so it owns /v1/messages; every other /v1 path stays untouched.
+        .route(routes::MESSAGES, post(proxy::handle_messages))
         .route(routes::V1_WILDCARD, any(proxy::handle))
         .layer(axum::middleware::from_fn(security_headers))
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))

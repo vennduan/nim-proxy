@@ -1014,6 +1014,611 @@
         },
         "security": []
       }
+    },
+    "/v1/messages": {
+      "post": {
+        "tags": [
+          "messages"
+        ],
+        "summary": "Create an Anthropic message through the pacing pipeline",
+        "description": "Converts the request to the OpenAI chat dialect, paces it through the shared key pool with the `/v1` surface, and converts the response back. A `stream: true` request returns the upstream OpenAI SSE until the M2 translator ships — both content types are documented on this operation. A non-2xx upstream status is re-shape-mapped into the Anthropic error envelope, keeping the upstream's status code.",
+        "operationId": "createAnthropicMessage",
+        "requestBody": {
+          "description": "Anthropic Messages request body",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "An Anthropic Messages request. It is converted to the OpenAI chat dialect and paced through the shared key pool exactly like the `/v1` passthrough; unsupported capabilities are rejected with a typed 400.",
+                "required": [
+                  "model"
+                ],
+                "properties": {
+                  "max_tokens": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 0
+                  },
+                  "messages": {
+                    "type": "array",
+                    "items": {}
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "parallel_tool_use": {
+                    "type": "boolean"
+                  },
+                  "seed": {
+                    "type": "integer",
+                    "format": "int64"
+                  },
+                  "stop_sequences": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "stream": {
+                    "type": "boolean"
+                  },
+                  "system": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {}
+                    ]
+                  },
+                  "temperature": {
+                    "type": "number",
+                    "format": "double"
+                  },
+                  "thinking": {
+                    "oneOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "budget_tokens": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          },
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "enabled",
+                              "disabled"
+                            ]
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "tool_choice": {
+                    "oneOf": [
+                      {
+                        "type": "string",
+                        "enum": [
+                          "auto",
+                          "any",
+                          "required",
+                          "none"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "type"
+                        ],
+                        "properties": {
+                          "disable_parallel_tool_use": {
+                            "type": "boolean"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "auto",
+                              "any",
+                              "none",
+                              "tool"
+                            ]
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "tools": {
+                    "type": "array",
+                    "items": {}
+                  },
+                  "top_p": {
+                    "type": "number",
+                    "format": "double"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "An Anthropic message. A `stream: true` request returns the upstream OpenAI SSE stream until the M2 translator ships; both content types are documented on this operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "An Anthropic message. `id` is `msg_`-prefixed; `content` mixes text and tool_use blocks; `stop_reason` is `end_turn`, `max_tokens`, or `tool_use`.",
+                  "required": [
+                    "id",
+                    "type",
+                    "role",
+                    "model",
+                    "content",
+                    "stop_reason",
+                    "stop_sequence",
+                    "usage"
+                  ],
+                  "properties": {
+                    "content": {
+                      "type": "array",
+                      "items": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "required": [
+                              "type",
+                              "text"
+                            ],
+                            "properties": {
+                              "text": {
+                                "type": "string"
+                              },
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "text"
+                                ]
+                              }
+                            }
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "type",
+                              "id",
+                              "name"
+                            ],
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "input": {},
+                              "name": {
+                                "type": "string"
+                              },
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "tool_use"
+                                ]
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "model": {
+                      "type": "string"
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "assistant"
+                      ]
+                    },
+                    "stop_reason": {
+                      "type": "string",
+                      "enum": [
+                        "end_turn",
+                        "max_tokens",
+                        "tool_use"
+                      ]
+                    },
+                    "stop_sequence": {
+                      "oneOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "message"
+                      ]
+                    },
+                    "usage": {
+                      "type": "object",
+                      "required": [
+                        "input_tokens",
+                        "output_tokens"
+                      ],
+                      "properties": {
+                        "input_tokens": {
+                          "type": "integer",
+                          "format": "int64",
+                          "minimum": 0
+                        },
+                        "output_tokens": {
+                          "type": "integer",
+                          "format": "int64",
+                          "minimum": 0
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "text/event-stream": {}
+            }
+          },
+          "400": {
+            "description": "Malformed JSON, a missing `model`, or an unsupported bridge capability (for example `mcp_servers`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The bridge error envelope. A proxy-own failure (bad JSON, missing `model`, an unsupported capability) carries a proxy-shaped `error` object; a non-2xx upstream is re-shape-mapped into the same envelope with the upstream's status code.",
+                  "required": [
+                    "type",
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "required": [
+                        "type",
+                        "message"
+                      ],
+                      "properties": {
+                        "code": {
+                          "oneOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "invalid_request_error",
+                            "authentication_error",
+                            "not_found_error",
+                            "rate_limit_error",
+                            "overloaded_error",
+                            "api_error"
+                          ]
+                        }
+                      }
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "error"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid client key in keyed mode.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The bridge error envelope. A proxy-own failure (bad JSON, missing `model`, an unsupported capability) carries a proxy-shaped `error` object; a non-2xx upstream is re-shape-mapped into the same envelope with the upstream's status code.",
+                  "required": [
+                    "type",
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "required": [
+                        "type",
+                        "message"
+                      ],
+                      "properties": {
+                        "code": {
+                          "oneOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "invalid_request_error",
+                            "authentication_error",
+                            "not_found_error",
+                            "rate_limit_error",
+                            "overloaded_error",
+                            "api_error"
+                          ]
+                        }
+                      }
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "error"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The upstream rate-limited the request; the error type is `rate_limit_error`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The bridge error envelope. A proxy-own failure (bad JSON, missing `model`, an unsupported capability) carries a proxy-shaped `error` object; a non-2xx upstream is re-shape-mapped into the same envelope with the upstream's status code.",
+                  "required": [
+                    "type",
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "required": [
+                        "type",
+                        "message"
+                      ],
+                      "properties": {
+                        "code": {
+                          "oneOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "invalid_request_error",
+                            "authentication_error",
+                            "not_found_error",
+                            "rate_limit_error",
+                            "overloaded_error",
+                            "api_error"
+                          ]
+                        }
+                      }
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "error"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The upstream gateway could not be reached or returned an unconvertible success body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The bridge error envelope. A proxy-own failure (bad JSON, missing `model`, an unsupported capability) carries a proxy-shaped `error` object; a non-2xx upstream is re-shape-mapped into the same envelope with the upstream's status code.",
+                  "required": [
+                    "type",
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "required": [
+                        "type",
+                        "message"
+                      ],
+                      "properties": {
+                        "code": {
+                          "oneOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "invalid_request_error",
+                            "authentication_error",
+                            "not_found_error",
+                            "rate_limit_error",
+                            "overloaded_error",
+                            "api_error"
+                          ]
+                        }
+                      }
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "error"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No capacity in the shared key pool, or the upstream is overloaded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The bridge error envelope. A proxy-own failure (bad JSON, missing `model`, an unsupported capability) carries a proxy-shaped `error` object; a non-2xx upstream is re-shape-mapped into the same envelope with the upstream's status code.",
+                  "required": [
+                    "type",
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "required": [
+                        "type",
+                        "message"
+                      ],
+                      "properties": {
+                        "code": {
+                          "oneOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "invalid_request_error",
+                            "authentication_error",
+                            "not_found_error",
+                            "rate_limit_error",
+                            "overloaded_error",
+                            "api_error"
+                          ]
+                        }
+                      }
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "error"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request exceeded its deadline.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The bridge error envelope. A proxy-own failure (bad JSON, missing `model`, an unsupported capability) carries a proxy-shaped `error` object; a non-2xx upstream is re-shape-mapped into the same envelope with the upstream's status code.",
+                  "required": [
+                    "type",
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "required": [
+                        "type",
+                        "message"
+                      ],
+                      "properties": {
+                        "code": {
+                          "oneOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "invalid_request_error",
+                            "authentication_error",
+                            "not_found_error",
+                            "rate_limit_error",
+                            "overloaded_error",
+                            "api_error"
+                          ]
+                        }
+                      }
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "error"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "client_key": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -2388,6 +2993,11 @@
         "scheme": "basic",
         "description": "Dashboard username and password, for non-browser clients such as a Prometheus scraper. `Authorization: Bearer <user>:<password>` is accepted equivalently."
       },
+      "client_key": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Client API key. Keyed mode: `Authorization: Bearer <client key>` for any key minted via POST /api/settings/clients. Open mode: the guard is bypassed and no header is required. The operator session cookie is not accepted on this route."
+      },
       "session_cookie": {
         "type": "apiKey",
         "in": "cookie",
@@ -2416,6 +3026,9 @@
     {
       "name": "setup",
       "description": "First-run claim. **Unauthenticated** — these routes sit outside the session guard because no user exists yet. They answer 404 the moment a superuser exists, so the window is exactly one claim wide."
+    },
+    {
+      "name": "messages"
     }
   ]
 }

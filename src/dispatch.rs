@@ -122,14 +122,33 @@ async fn run(handle: PoolHandle, mut queue: mpsc::UnboundedReceiver<Waiter>) {
 
 /// Minimal drop-guard so gauges stay honest on every exit path (granted,
 /// expired, abandoned, or panicked).
-pub fn scopeguard<F: FnMut()>(f: F) -> impl Drop {
-    struct Guard<F: FnMut()>(F);
-    impl<F: FnMut()> Drop for Guard<F> {
-        fn drop(&mut self) {
-            (self.0)();
-        }
+pub struct Guard<F: FnMut()>(F);
+impl<F: FnMut()> Drop for Guard<F> {
+    fn drop(&mut self) {
+        (self.0)();
     }
+}
+pub fn scopeguard<F: FnMut()>(f: F) -> Guard<F> {
     Guard(f)
+}
+
+/// The in-flight slot's release guard as owned by a request: decrements
+/// `AppState::inflight` on drop, so a response path holding it keeps the
+/// slot accounted until it really ends. Named (not an opaque `impl Drop`)
+/// so the streaming path can move it into its spawned task — and it is
+/// `Send` because its payload is an `Arc<AppState>`.
+pub struct InflightGuard(std::sync::Arc<crate::AppState>);
+impl InflightGuard {
+    pub fn new(state: std::sync::Arc<crate::AppState>) -> Self {
+        Self(state)
+    }
+}
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        self.0
+            .inflight
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 #[cfg(test)]

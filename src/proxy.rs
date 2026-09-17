@@ -32,6 +32,10 @@ struct Ctx {
     client: String,
     model: String,
     path: String,
+    /// Generation endpoint the request was served on: the OpenAI-wire chat
+    /// surface or the Anthropic Messages bridge that funnels into it. Bounded
+    /// to the two values of the `endpoint` label vocabulary.
+    endpoint: &'static str,
     started: Instant,
 }
 
@@ -303,7 +307,11 @@ fn is_json_mode(v: &serde_json::Value) -> bool {
 /// Record request-shape metrics: what the harness asked for (stream flag,
 /// conversation depth, tools offered, sampling params, output cap, JSON mode).
 /// Counts and sizes only — never message content. All heavy values go to
-/// histograms, never labels, so cardinality stays bounded.
+/// histograms, never labels, so cardinality stays bounded. The `endpoint`
+/// label cuts the same shape between the OpenAI-wire chat surface ("chat")
+/// and the Anthropic Messages bridge ("messages"); it is an addition to an
+/// existing series (pre-1.0 contract change, see
+/// knowledge/decisions/request-shape-metrics.md).
 fn record_shape(ctx: &Ctx, parsed: Option<&serde_json::Value>, wants_stream: bool) {
     // Labeled by client: request shape reflects the calling client, not the
     // model — this is what powers the Clients view ("what is each agent
@@ -312,31 +320,76 @@ fn record_shape(ctx: &Ctx, parsed: Option<&serde_json::Value>, wants_stream: boo
     counter!(
         "nimproxy_stream_requests_total",
         "client" => ctx.client.clone(),
+        "endpoint" => ctx.endpoint,
         "stream" => if wants_stream { "true" } else { "false" }.to_owned(),
     )
     .increment(1);
     let Some(v) = parsed else { return };
     if let Some(msgs) = v.get("messages").and_then(|m| m.as_array()) {
-        histogram!("nimproxy_request_messages", "client" => ctx.client.clone())
-            .record(msgs.len() as f64);
+        histogram!(
+            "nimproxy_request_messages",
+            "client" => ctx.client.clone(),
+            "endpoint" => ctx.endpoint,
+        )
+        .record(msgs.len() as f64);
     }
     if let Some(n) = count_tools(v) {
-        histogram!("nimproxy_request_tools", "client" => ctx.client.clone()).record(n as f64);
-        counter!("nimproxy_tool_choice_total", "mode" => tool_choice_mode(v).to_owned())
-            .increment(1);
+        histogram!(
+            "nimproxy_request_tools",
+            "client" => ctx.client.clone(),
+            "endpoint" => ctx.endpoint,
+        )
+        .record(n as f64);
+        counter!(
+            "nimproxy_tool_choice_total",
+            "endpoint" => ctx.endpoint,
+            "mode" => tool_choice_mode(v).to_owned(),
+        )
+        .increment(1);
     }
     if let Some(mt) = v
         .get("max_tokens")
         .and_then(|x| x.as_u64())
         .or_else(|| v.get("max_completion_tokens").and_then(|x| x.as_u64()))
     {
-        histogram!("nimproxy_request_max_tokens", "client" => ctx.client.clone()).record(mt as f64);
+        histogram!(
+            "nimproxy_request_max_tokens",
+            "client" => ctx.client.clone(),
+            "endpoint" => ctx.endpoint,
+        )
+        .record(mt as f64);
     }
     if let Some(t) = v.get("temperature").and_then(|x| x.as_f64()) {
-        histogram!("nimproxy_request_temperature", "client" => ctx.client.clone()).record(t);
+        histogram!(
+            "nimproxy_request_temperature",
+            "client" => ctx.client.clone(),
+            "endpoint" => ctx.endpoint,
+        )
+        .record(t);
     }
     if is_json_mode(v) {
-        counter!("nimproxy_json_mode_total", "client" => ctx.client.clone()).increment(1);
+        counter!(
+            "nimproxy_json_mode_total",
+            "client" => ctx.client.clone(),
+            "endpoint" => ctx.endpoint,
+        )
+        .increment(1);
+    }
+}
+
+/// The Anthropic server-tool family label, drawn from the frozen bridge
+/// vocabulary: tool types derive to a bounded family name, and rejected
+/// server tools (unknown types, `mcp_toolset`, programmatic-only callers)
+/// count as `server_rejected` — one bucket, never one per tool name.
+fn tool_type_label(family: crate::bridge::ToolFamily) -> &'static str {
+    match family {
+        crate::bridge::ToolFamily::Bash => "bash",
+        crate::bridge::ToolFamily::TextEditor => "text_editor",
+        crate::bridge::ToolFamily::Memory => "memory",
+        crate::bridge::ToolFamily::WebSearch => "web_search",
+        crate::bridge::ToolFamily::WebFetch => "web_search",
+        crate::bridge::ToolFamily::Computer => "computer",
+        crate::bridge::ToolFamily::Custom => "custom",
     }
 }
 
@@ -426,47 +479,35 @@ fn upstream_request(
     req
 }
 
-/// Single entry point for every /v1/* call.
-pub async fn handle(
-    State(state): State<Arc<AppState>>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    let accepted = Instant::now();
-    // Fail closed until first-time setup completes: nothing proxies, and the
-    // error tells the operator exactly why.
-    if state
-        .setup_required
-        .load(std::sync::atomic::Ordering::SeqCst)
-    {
-        return crate::auth::setup_required_json();
-    }
-
-    // One consistent config view for this request's whole lifetime; a
-    // concurrent settings save affects only requests that arrive after it.
-    let cfg = state.cfg();
-
+/// Everything both /v1 entry points share before the pipeline: the
+/// setup-required gate, the in-flight cap, client-key auth, and deadline
+/// parsing. The in-flight guard is returned with the success value so the
+/// streaming path can move it into its spawned task.
+async fn shared_guard(
+    state: &Arc<AppState>,
+    cfg: &Config,
+    headers: &HeaderMap,
+    accepted: Instant,
+) -> Result<
+    (
+        String,
+        crate::dispatch::InflightGuard,
+        Option<RequestDeadline>,
+    ),
+    Response,
+> {
     // Shed load past the in-flight cap so a connection flood can't grow the
-    // queue unbounded. A guard decrements on every exit path; the streaming
-    // path moves it into its spawned task so a live stream keeps occupying
-    // its slot until the stream actually ends.
+    // queue unbounded. The guard decrements on every exit path; the
+    // streaming path moves it into its spawned task so a live stream keeps
+    // occupying its slot until the stream actually ends.
     let inflight = state
         .inflight
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         + 1;
-    let inflight_guard = crate::dispatch::scopeguard({
-        let state = state.clone();
-        move || {
-            state
-                .inflight
-                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-        }
-    });
+    let inflight_guard = crate::dispatch::InflightGuard::new(state.clone());
     if inflight > cfg.max_inflight {
         counter!("nimproxy_shed_total").increment(1);
-        return overloaded(cfg.max_inflight);
+        return Err(overloaded(cfg.max_inflight));
     }
 
     // Client auth: open mode admits everyone as "local"; keyed mode hashes
@@ -492,16 +533,45 @@ pub async fn handle(
                 None => {
                     counter!("nimproxy_unauthorized_total").increment(1);
                     tokio::time::sleep(Duration::from_millis(250)).await;
-                    return unauthorized();
+                    return Err(unauthorized());
                 }
             }
         }
     };
 
-    let request_deadline = match parse_request_deadline(&headers, accepted) {
-        Ok(deadline) => deadline,
-        Err(()) => return invalid_deadline(),
-    };
+    match parse_request_deadline(headers, accepted) {
+        Ok(request_deadline) => Ok((client, inflight_guard, request_deadline)),
+        Err(()) => Err(invalid_deadline()),
+    }
+}
+
+/// Single entry point for every /v1/* call.
+pub async fn handle(
+    State(state): State<Arc<AppState>>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let accepted = Instant::now();
+    // Fail closed until first-time setup completes: nothing proxies, and the
+    // error tells the operator exactly why.
+    if state
+        .setup_required
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return crate::auth::setup_required_json();
+    }
+
+    // One consistent config view for this request's whole lifetime; a
+    // concurrent settings save affects only requests that arrive after it.
+    let cfg = state.cfg();
+
+    let (client, inflight_guard, request_deadline) =
+        match shared_guard(&state, &cfg, &headers, accepted).await {
+            Ok(guard) => guard,
+            Err(response) => return response,
+        };
 
     let path_query = uri
         .path_and_query()
@@ -517,6 +587,7 @@ pub async fn handle(
         client,
         model: label_model(&state, raw_model),
         path: label_path(uri.path()),
+        endpoint: "chat",
         started: Instant::now(),
     };
 
@@ -618,6 +689,269 @@ pub async fn handle(
             work.await
         }
     }
+}
+
+/// The Anthropic Messages bridge: `POST /v1/messages` converts to the chat
+/// payload, funnels through the exact same pipeline as the OpenAI-wire
+/// surface, and converts the response back — or re-shape-maps a non-2xx
+/// upstream into the Anthropic error envelope. Proxy-own failures
+/// (setup-required, 401, 429-shed, 400 deadline, BridgeError) keep the
+/// OpenAI-style envelope: documented exception, no new machinery.
+pub async fn handle_messages(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let accepted = Instant::now();
+    if state
+        .setup_required
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return crate::auth::setup_required_json();
+    }
+    let cfg = state.cfg();
+    let (client, inflight_guard, request_deadline) =
+        match shared_guard(&state, &cfg, &headers, accepted).await {
+            Ok(guard) => guard,
+            Err(response) => return response,
+        };
+
+    let anthropic = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .filter(|v| v.is_object());
+    let anthropic = match anthropic {
+        Some(anthropic) => anthropic,
+        None => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                Bytes::from(
+                    serde_json::to_vec(&proxy_error_json(
+                        "invalid_json",
+                        "request body must be a JSON object",
+                    ))
+                    .expect("static body serializes"),
+                ),
+            );
+        }
+    };
+
+    let request_model = anthropic
+        .get("model")
+        .and_then(|m| m.as_str())
+        .unwrap_or("none")
+        .to_owned();
+
+    let payload = match crate::bridge::to_chat_payload(&anthropic) {
+        Ok(payload) => payload,
+        Err(
+            bridge_error @ crate::bridge::BridgeError {
+                code: "server_tools_unsupported",
+                ..
+            },
+        ) => {
+            // A rejected server tool is the one tool offer the client asked
+            // for that the pipeline will never see: it counts as
+            // `server_rejected` so the frozen vocabulary stays complete.
+            counter!(
+                "nimproxy_tool_type_total",
+                "type" => "server_rejected",
+            )
+            .increment(1);
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                Bytes::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "type": "error",
+                        "error": {
+                            "type": "invalid_request_error",
+                            "code": bridge_error.code,
+                            "message": bridge_error.message
+                        }
+                    }))
+                    .expect("static shape serializes"),
+                ),
+            );
+        }
+        Err(crate::bridge::BridgeError { code, message }) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                Bytes::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "type": "error",
+                        "error": {
+                            "type": "invalid_request_error",
+                            "code": code,
+                            "message": message
+                        }
+                    }))
+                    .expect("static shape serializes"),
+                ),
+            );
+        }
+    };
+
+    let chat = payload.json.clone();
+    let wants_stream = chat
+        .get("stream")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false);
+    let prefer = affinity(&chat, state.pool().len());
+
+    let ctx = Ctx {
+        client,
+        model: label_model(&state, request_model.as_str()),
+        path: label_path("/v1/chat/completions"),
+        endpoint: "messages",
+        started: Instant::now(),
+    };
+
+    // Request-shape emission for the bridge endpoint: the shape family reads
+    // the converted chat body. Tool offers are counted per entry over the
+    // frozen tool-type vocabulary; a request rejected by
+    // `to_chat_payload` above for a server tool counts as `server_rejected`
+    // exactly once.
+    record_shape(&ctx, Some(&chat), wants_stream);
+    for meta in &payload.tool_meta {
+        counter!(
+            "nimproxy_tool_type_total",
+            "type" => tool_type_label(meta.family),
+        )
+        .increment(1);
+    }
+
+    // Usage injection: streamed responses only report exact token usage when
+    // asked via stream_options, so ask on the client's behalf. `fallback`
+    // keeps the untouched body for a one-shot retry if the model rejects it.
+    let mut body = Bytes::from(serde_json::to_vec(&chat).expect("chat payload serializes"));
+    let mut fallback: Option<Bytes> = None;
+    if wants_stream && !cfg.strict_passthrough {
+        let injectable = !state.no_inject.lock().unwrap().contains(&ctx.model);
+        if injectable {
+            let mut v = chat;
+            v["stream_options"] = serde_json::json!({ "include_usage": true });
+            fallback = Some(std::mem::replace(
+                &mut body,
+                Bytes::from(serde_json::to_vec(&v).expect("injected payload serializes")),
+            ));
+        }
+    }
+    let method = Method::POST;
+    let path_query = "/v1/chat/completions".to_owned();
+
+    if wants_stream {
+        // M1 ships the non-streaming bridge; a `stream: true` request rides
+        // the existing wait/heartbeat loop and passes the upstream OpenAI SSE
+        // through untouched. T6 (M2) replaces this return with the
+        // Anthropic SSE translator.
+        return streaming(
+            state,
+            cfg.clone(),
+            ctx,
+            method,
+            path_query,
+            headers,
+            body,
+            prefer,
+            fallback,
+            inflight_guard,
+            request_deadline,
+            wait_deadline(&cfg),
+        );
+    }
+
+    let work = buffered(
+        state,
+        cfg.clone(),
+        ctx.clone(),
+        method,
+        path_query,
+        headers,
+        body,
+        prefer,
+        wait_deadline(&cfg),
+    );
+    let response = match request_deadline {
+        Some(deadline) => match tokio::time::timeout_at(deadline.0.into(), work).await {
+            Ok(response) => response,
+            Err(_) => {
+                record_deadline(&ctx);
+                return deadline_exceeded();
+            }
+        },
+        None => work.await,
+    };
+    anthropic_finish(response, &ctx, &request_model).await
+}
+
+/// Finish a bridge response: a success is harvested for observations and
+/// converted to the Anthropic message; a non-2xx is re-shape-mapped into
+/// the Anthropic error envelope with the same status code, so the client
+/// gets a parseable error. Unparseable success bodies pass through
+/// untouched — the pipeline already settled the request, so a 2xx is never
+/// dropped.
+async fn anthropic_finish(resp: Response, ctx: &Ctx, request_model: &str) -> Response {
+    let status = resp.status();
+    if status.is_success() {
+        let bytes = match axum::body::to_bytes(resp.into_body(), usize::MAX).await {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                // Body stalled: surface the gateway error rather than a
+                // truncated success.
+                return bad_gateway();
+            }
+        };
+        match serde_json::from_slice::<serde_json::Value>(&bytes) {
+            Ok(completion) => {
+                record_observations(ctx, &observe_buffered(&bytes));
+                let message = crate::bridge::chat_to_message(&completion, request_model);
+                return json_response(
+                    status,
+                    Bytes::from(
+                        serde_json::to_vec(&message).expect("Anthropic message serializes"),
+                    ),
+                );
+            }
+            Err(_) => return json_response(status, bytes),
+        }
+    }
+    // Non-2xx upstream into the Anthropic error envelope: same status code,
+    // parseable `{"type":"error","error":{"type","message"}}`. The
+    // upstream's JSON body supplies the message; the status class becomes
+    // the error type.
+    let raw = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .ok();
+    let detail = raw
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|v| {
+            v.get("error")
+                .and_then(|e| e.get("message"))
+                .or_else(|| v.get("message"))
+                .or_else(|| v.get("detail"))
+                .and_then(|m| m.as_str().map(str::to_owned))
+        })
+        .unwrap_or_else(|| "upstream request failed".to_owned());
+    let kind = match status.as_u16() {
+        400 => "invalid_request_error",
+        401 | 403 => "authentication_error",
+        404 => "not_found_error",
+        429 => "rate_limit_error",
+        500 => "api_error",
+        503 => "overloaded_error",
+        504 => "timeout_error",
+        _ => "api_error",
+    };
+    record_request(ctx, status.as_str());
+    json_response(
+        status,
+        Bytes::from(
+            serde_json::to_vec(&serde_json::json!({
+                "type": "error",
+                "error": { "type": kind, "message": detail }
+            }))
+            .expect("static shape serializes"),
+        ),
+    )
 }
 
 /// Sticky-lane hint: hash the conversation's identity (model + the first two

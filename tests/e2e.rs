@@ -313,6 +313,11 @@ fn contract_body(
             "model": "mock/model-a",
             "stream": false
         }),
+        "v1-messages" => serde_json::json!({
+            "messages": [{"content": format!("route contract {suffix}"), "role": "user"}],
+            "model": "mock/model-a",
+            "max_tokens": 64
+        }),
         "login-post" => {
             return Some(format!(
                 "username={}&password={}",
@@ -785,6 +790,25 @@ async fn route_contract_behavior_matrix() {
             path: "/v1/chat/completions",
         },
         RouteBehavior {
+            access: ContractAccess::Client,
+            accept_html: false,
+            expectations: [
+                contract_expectation(503, Some("setup_required")),
+                contract_expectation(200, None),
+                contract_expectation(200, None),
+                contract_expectation(200, None),
+                contract_expectation(200, None),
+            ],
+            method: "POST",
+            name: "v1-messages",
+            phase: ContractPhase::PostSetup,
+            request: ContractRequest::Json,
+            side_effect: ContractSideEffect::Upstream,
+            success_content_type: Some("application/json"),
+            success_status: 200,
+            path: "/v1/messages",
+        },
+        RouteBehavior {
             access: ContractAccess::OperatorAdmin,
             accept_html: false,
             expectations: configured_contract_expectations(200, 403),
@@ -943,7 +967,7 @@ async fn route_contract_behavior_matrix() {
         },
     ];
 
-    assert_eq!(rows.len(), 36, "route-contract:inventory");
+    assert_eq!(rows.len(), 37, "route-contract:inventory");
 
     let mock = start_mock().await;
     let before_setup = start_proxy_fresh().await;
@@ -3220,15 +3244,17 @@ async fn request_shape_and_quality_metrics_are_recorded() {
 
     // Request shape (labeled by client — open mode admits everyone as "local").
     assert!(
-        metrics.contains(r#"nimproxy_stream_requests_total{client="local",stream="true"}"#),
+        metrics.contains(
+            r#"nimproxy_stream_requests_total{client="local",endpoint="chat",stream="true"}"#
+        ),
         "stream flag counted: {metrics}"
     );
     assert!(
-        metrics.contains(r#"nimproxy_request_messages_count{client="local"}"#),
+        metrics.contains(r#"nimproxy_request_messages_count{client="local",endpoint="chat"}"#),
         "conversation depth histogram present"
     );
     assert!(
-        metrics.contains(r#"nimproxy_request_tools_count{client="local"}"#),
+        metrics.contains(r#"nimproxy_request_tools_count{client="local",endpoint="chat"}"#),
         "tools-offered histogram present"
     );
     assert!(
@@ -3240,7 +3266,7 @@ async fn request_shape_and_quality_metrics_are_recorded() {
         "max_tokens histogram present"
     );
     assert!(
-        metrics.contains(r#"nimproxy_tool_choice_total{mode="auto"}"#),
+        metrics.contains(r#"nimproxy_tool_choice_total{endpoint="chat",mode="auto"}"#),
         "tool_choice mode counted"
     );
 
@@ -3345,11 +3371,11 @@ async fn buffered_quality_and_edge_cases_are_recorded() {
 
     // Edge cases.
     assert!(
-        metrics.contains(r#"nimproxy_tool_choice_total{mode="required"}"#),
+        metrics.contains(r#"nimproxy_tool_choice_total{endpoint="chat",mode="required"}"#),
         "non-auto tool_choice mode recorded"
     );
     assert!(
-        metrics.contains(r#"nimproxy_json_mode_total{client="local"}"#),
+        metrics.contains(r#"nimproxy_json_mode_total{client="local",endpoint="chat"}"#),
         "JSON mode recorded"
     );
     assert!(
@@ -3359,6 +3385,209 @@ async fn buffered_quality_and_edge_cases_are_recorded() {
     assert!(
         !metrics.contains(r#"reason="banana""#),
         "raw upstream finish_reason never becomes a label"
+    );
+}
+
+/// The Anthropic Messages bridge proof: a bridge request is converted to the
+/// OpenAI wire, paced through the pipeline against `/v1/chat/completions`
+/// (the mock's only chat route), and converted back into an Anthropic
+/// message. Every failure path keeps its status class and shape: proxy-own
+/// failures (auth, setup) stay proxy-style, upstream failures re-shape-map
+/// into the Anthropic error envelope.
+fn bridge_body(text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "model": "mock/model-a",
+        "max_tokens": 64,
+        "system": "you are a bridge test",
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": text}]}
+        ]
+    })
+}
+
+#[tokio::test]
+async fn messages_bridge_converts_paces_and_maps_back() {
+    let mock = start_mock().await;
+    let proxy = start_proxy(&mock.url, &[]).await;
+
+    let response = client()
+        .post(proxy.url("/v1/messages"))
+        .json(&bridge_body("bridge success"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "bridge success is an Anthropic 200");
+    let message: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(message["id"], "msg_mock-1", "{message}");
+    assert_eq!(message["type"], "message", "{message}");
+    assert_eq!(message["role"], "assistant", "{message}");
+    assert_eq!(
+        message["model"], "mock/model-a",
+        "request model echoed: {message}"
+    );
+    assert_eq!(
+        message["content"],
+        serde_json::json!([{"type": "text", "text": "hello world"}]),
+        "{message}"
+    );
+    assert_eq!(message["stop_reason"], "end_turn", "{message}");
+    assert_eq!(
+        message["usage"],
+        serde_json::json!({"input_tokens": 11, "output_tokens": 2}),
+        "{message}"
+    );
+
+    // The request must have reached the mock as a converted OpenAI chat: the
+    // mock routes only `/v1/chat/completions`, so a 200 already proves the
+    // rewrite; assert the wire shape the mock recorded.
+    {
+        let hits = mock.state.hits.lock().unwrap();
+        assert_eq!(hits.len(), 1, "exactly one upstream call: {hits:?}");
+        let hit = &hits[0];
+        assert_eq!(hit.body["model"], "mock/model-a", "{hit:?}");
+        assert_eq!(hit.body["max_tokens"], 64, "{hit:?}");
+        let messages = hit.body["messages"].as_array().expect("chat messages");
+        assert_eq!(
+            messages[0],
+            serde_json::json!({"role": "system", "content": "you are a bridge test"}),
+            "system prompt converted to a chat system message: {hit:?}"
+        );
+        assert_eq!(
+            messages[1],
+            serde_json::json!({"role": "user", "content": "bridge success"}),
+            "text blocks flattened to chat user content: {hit:?}"
+        );
+    }
+
+    // The bridge's request shape lands on the messages endpoint label.
+    let metrics = metrics(&proxy).await;
+    assert!(
+        metrics.contains(
+            r#"nimproxy_stream_requests_total{client="local",endpoint="messages",stream="false"}"#
+        ),
+        "bridge shape counted on the messages endpoint: {metrics}"
+    );
+}
+
+#[tokio::test]
+async fn messages_bridge_maps_failures_into_anthropic_envelopes() {
+    let mock = start_mock().await;
+    let proxy = start_proxy_with(
+        &mock.url,
+        StoreOpts {
+            nim_keys: vec![("only-key".into(), 40)],
+            clients: vec![("bridge-client".into(), "bridge-secret".into())],
+            open: false,
+            ..Default::default()
+        },
+        &[],
+    )
+    .await;
+
+    // Proxy-own 401: keyed mode rejects a missing bearer before any bridge
+    // work, and the proxy-style envelope is the contract for auth failures.
+    let missing = client()
+        .post(proxy.url("/v1/messages"))
+        .json(&bridge_body("bridge auth"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 401, "missing bearer is a proxy 401");
+    assert_eq!(
+        missing
+            .headers()
+            .get("www-authenticate")
+            .and_then(|v| v.to_str().ok()),
+        Some("Bearer"),
+        "the 401 advertises Bearer auth"
+    );
+    let body: serde_json::Value = missing.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "unauthorized", "{body}");
+    assert_eq!(body["error"]["type"], "proxy_error", "{body}");
+
+    // Upstream 429s are pacing-class: the proxy rides them out with lane
+    // failover, so the bridge client sees the converted success, never the 429.
+    let ridden_start = mock.state.hit_count();
+    mock.state.push(support::Behavior::RateLimited(1));
+    mock.state.push(support::Behavior::RateLimited(1));
+    let ridden = client()
+        .post(proxy.url("/v1/messages"))
+        .bearer_auth("bridge-secret")
+        .json(&bridge_body("bridge 429"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ridden.status(), 200, "429s ridden out by lane failover");
+    let message: serde_json::Value = ridden.json().await.unwrap();
+    assert_eq!(message["type"], "message", "{message}");
+    let keys = mock.state.hit_keys();
+    assert_eq!(keys.len(), 3, "two 429s then a success on the single lane");
+    assert!(
+        keys.iter().all(|key| key == "only-key"),
+        "the single NIM lane served every attempt"
+    );
+    assert_eq!(
+        ridden_start, 0,
+        "the rideout is this test's only traffic so far"
+    );
+
+    // A non-retryable upstream 400 re-shape-maps into the Anthropic error
+    // envelope, keeping the upstream status.
+    mock.state.push(support::Behavior::BadRequest);
+    let bad = client()
+        .post(proxy.url("/v1/messages"))
+        .bearer_auth("bridge-secret")
+        .json(&bridge_body("bridge bad request"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 400, "upstream 400 keeps its status");
+    let body: serde_json::Value = bad.json().await.unwrap();
+    assert_eq!(body["type"], "error", "{body}");
+    assert_eq!(body["error"]["type"], "invalid_request_error", "{body}");
+    assert_eq!(body["error"]["message"], "bad stream_options", "{body}");
+
+    // Typed 400s: a missing model and a server tool are bridge rejections —
+    // Anthropic-shaped, and the server tool counts as `server_rejected`.
+    let no_model = client()
+        .post(proxy.url("/v1/messages"))
+        .bearer_auth("bridge-secret")
+        .json(&serde_json::json!({"messages": []}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(no_model.status(), 400);
+    let body: serde_json::Value = no_model.json().await.unwrap();
+    assert_eq!(body["type"], "error", "{body}");
+    assert_eq!(body["error"]["type"], "invalid_request_error", "{body}");
+    assert_eq!(body["error"]["code"], "missing_model", "{body}");
+
+    let server_tools = client()
+        .post(proxy.url("/v1/messages"))
+        .bearer_auth("bridge-secret")
+        .json(&serde_json::json!({
+            "model": "mock/model-a",
+            "mcp_servers": {"github": {}},
+            "messages": []
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(server_tools.status(), 400);
+    let body: serde_json::Value = server_tools.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "server_tools_unsupported", "{body}");
+
+    let metrics = metrics(&proxy).await;
+    assert!(
+        metrics.contains(r#"nimproxy_tool_type_total{type="server_rejected"} 1"#),
+        "the rejected server tool counted once: {metrics}"
+    );
+    // The two bridge-rejected 400s add no upstream traffic; the rideout hit
+    // three times and the re-shape-mapped 400 exactly once.
+    assert_eq!(
+        mock.state.hit_count(),
+        4,
+        "400 rejections stay off the pipeline"
     );
 }
 

@@ -28,8 +28,15 @@ use axum::response::{IntoResponse, Response};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::sync::Arc;
+use utoipa::openapi::request_body::RequestBodyBuilder;
+use utoipa::openapi::response::ResponseBuilder;
+use utoipa::openapi::schema::{Object, ObjectBuilder, OneOfBuilder, Schema, ToArray};
 use utoipa::openapi::security::{ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityScheme};
-use utoipa::{Modify, OpenApi, ToSchema};
+use utoipa::openapi::{
+    Content, ContentBuilder, HttpMethod, PathItem, RefOr, Required, ResponsesBuilder,
+    SecurityRequirement, Tag, Type,
+};
+use utoipa::{Modify, OpenApi, PartialSchema, ToSchema};
 
 use crate::config::{DashboardCfg, GovernorCfg, Limits, Mode, Role, StoredConfig};
 use crate::history::{HistoryDiagnostics, MetricValue, RollupPoint, Tail};
@@ -567,11 +574,341 @@ pub struct ApiDoc;
 /// The committed spec, pretty-printed with a trailing newline. `openapi.json`
 /// at the repo root is exactly this string; CI regenerates and diffs.
 pub fn openapi_json() -> String {
-    let mut s = ApiDoc::openapi()
+    let mut spec = ApiDoc::openapi();
+    add_messages_bridge(&mut spec);
+    let mut s = spec
         .to_pretty_json()
         .expect("the generated spec serializes");
     s.push('\n');
     s
+}
+
+// ---------------------------------------------------------------------------
+// The Anthropic Messages bridge, added by post-processing
+// ---------------------------------------------------------------------------
+//
+// `POST /v1/messages` is a hand-rolled handler, not a utoipa path, so its
+// operation lands in the spec after generation: one added path entry, one
+// added security scheme, one added tag — never a change to a generated
+// byte. The OpenAI-wire `/v1` wildcard stays upstream-owned and out of the
+// spec.
+
+/// The client-key Bearer scheme. Keyed mode demands a provisioned client key; open
+/// mode accepts any request. The operator session cookie does not open this
+/// route — it is the client's surface, not the operator's.
+fn client_key_scheme() -> SecurityScheme {
+    SecurityScheme::Http(
+        HttpBuilder::new()
+            .scheme(HttpAuthScheme::Bearer)
+            .description(Some(
+                "Client API key. Keyed mode: `Authorization: Bearer <client key>` for \
+                 any key minted via POST /api/settings/clients. Open mode: the guard \
+                 is bypassed and no header is required. The operator session cookie \
+                 is not accepted on this route.",
+            ))
+            .build(),
+    )
+}
+
+/// A `string` schema with a fixed `enum` of the given values.
+fn string_enum(values: &[&str]) -> Object {
+    ObjectBuilder::new()
+        .schema_type(Type::String)
+        .enum_values(Some(values.iter().copied()))
+        .build()
+}
+
+/// A `oneOf` of the given components.
+fn one_of(components: Vec<RefOr<Schema>>) -> RefOr<Schema> {
+    components
+        .into_iter()
+        .fold(OneOfBuilder::new(), |builder: OneOfBuilder, component| {
+            builder.item(component)
+        })
+        .into()
+}
+
+/// The `200` message schema: `id` is `msg_`-prefixed, `content` mixes text
+/// and tool_use blocks, `usage` counts prompt/completion tokens.
+fn message_response_schema() -> Object {
+    let text_block = ObjectBuilder::new()
+        .required("type")
+        .required("text")
+        .property("type", string_enum(&["text"]))
+        .property("text", String::schema())
+        .build();
+    let tool_use_block = ObjectBuilder::new()
+        .required("type")
+        .required("id")
+        .required("name")
+        .property("type", string_enum(&["tool_use"]))
+        .property("id", String::schema())
+        .property("name", String::schema())
+        .property("input", serde_json::Value::schema())
+        .build();
+    let usage = ObjectBuilder::new()
+        .required("input_tokens")
+        .required("output_tokens")
+        .property("input_tokens", u64::schema())
+        .property("output_tokens", u64::schema())
+        .build();
+    ObjectBuilder::new()
+        .description(Some(
+            "An Anthropic message. `id` is `msg_`-prefixed; `content` mixes text and \
+             tool_use blocks; `stop_reason` is `end_turn`, `max_tokens`, or \
+             `tool_use`.",
+        ))
+        .required("id")
+        .required("type")
+        .required("role")
+        .required("model")
+        .required("content")
+        .required("stop_reason")
+        .required("stop_sequence")
+        .required("usage")
+        .property("id", String::schema())
+        .property("type", string_enum(&["message"]))
+        .property("role", string_enum(&["assistant"]))
+        .property("model", String::schema())
+        .property(
+            "content",
+            one_of(vec![text_block.into(), tool_use_block.into()]).to_array(),
+        )
+        .property(
+            "stop_reason",
+            string_enum(&["end_turn", "max_tokens", "tool_use"]),
+        )
+        .property("stop_sequence", Option::<String>::schema())
+        .property("usage", usage)
+        .build()
+}
+
+/// The request body schema: `model` is required; tool offers and every
+/// capability the pipeline does not carry are documented but rejected with
+/// a typed 400.
+fn message_request_schema() -> Object {
+    let tool_choice = one_of(vec![
+        string_enum(&["auto", "any", "required", "none"]).into(),
+        ObjectBuilder::new()
+            .required("type")
+            .property("type", string_enum(&["auto", "any", "none", "tool"]))
+            .property("name", String::schema())
+            .property("disable_parallel_tool_use", bool::schema())
+            .build()
+            .into(),
+    ]);
+    let thinking = one_of(vec![
+        bool::schema(),
+        ObjectBuilder::new()
+            .property("type", string_enum(&["enabled", "disabled"]))
+            .property("budget_tokens", u64::schema())
+            .build()
+            .into(),
+    ]);
+    ObjectBuilder::new()
+        .description(Some(
+            "An Anthropic Messages request. It is converted to the OpenAI chat \
+             dialect and paced through the shared key pool exactly like the `/v1` \
+             passthrough; unsupported capabilities are rejected with a typed 400.",
+        ))
+        .required("model")
+        .property("model", String::schema())
+        .property(
+            "messages",
+            <serde_json::Value as PartialSchema>::schema().to_array(),
+        )
+        .property(
+            "system",
+            one_of(vec![
+                String::schema(),
+                <serde_json::Value as PartialSchema>::schema(),
+            ]),
+        )
+        .property(
+            "tools",
+            <serde_json::Value as PartialSchema>::schema().to_array(),
+        )
+        .property("tool_choice", tool_choice)
+        .property("thinking", thinking)
+        .property("max_tokens", u64::schema())
+        .property("temperature", f64::schema())
+        .property("top_p", f64::schema())
+        .property("stop_sequences", Vec::<String>::schema())
+        .property("stream", bool::schema())
+        .property("seed", i64::schema())
+        .property("parallel_tool_use", bool::schema())
+        .build()
+}
+
+/// The bridge error envelope: proxy-own failures keep the proxy-shaped
+/// `error` object, and non-2xx upstreams are re-shape-mapped into it with
+/// the upstream's status code.
+fn message_error_schema() -> Object {
+    ObjectBuilder::new()
+        .description(Some(
+            "The bridge error envelope. A proxy-own failure (bad JSON, missing \
+             `model`, an unsupported capability) carries a proxy-shaped `error` \
+             object; a non-2xx upstream is re-shape-mapped into the same envelope \
+             with the upstream's status code.",
+        ))
+        .required("type")
+        .required("error")
+        .property("type", string_enum(&["error"]))
+        .property(
+            "error",
+            ObjectBuilder::new()
+                .required("type")
+                .required("message")
+                .property(
+                    "type",
+                    string_enum(&[
+                        "invalid_request_error",
+                        "authentication_error",
+                        "not_found_error",
+                        "rate_limit_error",
+                        "overloaded_error",
+                        "api_error",
+                    ]),
+                )
+                .property("message", String::schema())
+                .property("code", Option::<String>::schema())
+                .build(),
+        )
+        .build()
+}
+
+/// `POST /v1/messages` — Anthropic request in, message out (or the
+/// Anthropic-shaped error). A `stream: true` request returns the upstream
+/// OpenAI SSE until the M2 translator ships, so the one operation
+/// documents both `200` content types.
+fn messages_bridge_operation() -> utoipa::openapi::path::Operation {
+    let error = message_error_schema();
+    utoipa::openapi::path::OperationBuilder::new()
+        .tag("messages")
+        .operation_id(Some("createAnthropicMessage"))
+        .summary(Some(
+            "Create an Anthropic message through the pacing pipeline",
+        ))
+        .description(Some(
+            "Converts the request to the OpenAI chat dialect, paces it through \
+             the shared key pool with the `/v1` surface, and converts the \
+             response back. A `stream: true` request returns the upstream \
+             OpenAI SSE until the M2 translator ships — both content types are \
+             documented on this operation. A non-2xx upstream status is \
+             re-shape-mapped into the Anthropic error envelope, keeping the \
+             upstream's status code.",
+        ))
+        .request_body(Some(
+            RequestBodyBuilder::new()
+                .description(Some("Anthropic Messages request body"))
+                .required(Some(Required::True))
+                .content(
+                    "application/json",
+                    Content::new(Some(message_request_schema())),
+                )
+                .build(),
+        ))
+        .responses(
+            ResponsesBuilder::new()
+                .response(
+                    "200",
+                    ResponseBuilder::new()
+                        .description(
+                            "An Anthropic message. A `stream: true` request returns \
+                             the upstream OpenAI SSE stream until the M2 translator \
+                             ships; both content types are documented on this \
+                             operation.",
+                        )
+                        .content(
+                            "application/json",
+                            Content::new(Some(message_response_schema())),
+                        )
+                        .content("text/event-stream", ContentBuilder::new().build())
+                        .build(),
+                )
+                .response(
+                    "400",
+                    ResponseBuilder::new()
+                        .description(
+                            "Malformed JSON, a missing `model`, or an unsupported \
+                             bridge capability (for example `mcp_servers`).",
+                        )
+                        .content("application/json", Content::new(Some(error.clone())))
+                        .build(),
+                )
+                .response(
+                    "401",
+                    ResponseBuilder::new()
+                        .description("No valid client key in keyed mode.")
+                        .content("application/json", Content::new(Some(error.clone())))
+                        .build(),
+                )
+                .response(
+                    "429",
+                    ResponseBuilder::new()
+                        .description(
+                            "The upstream rate-limited the request; the error type \
+                             is `rate_limit_error`.",
+                        )
+                        .content("application/json", Content::new(Some(error.clone())))
+                        .build(),
+                )
+                .response(
+                    "502",
+                    ResponseBuilder::new()
+                        .description(
+                            "The upstream gateway could not be reached or returned \
+                             an unconvertible success body.",
+                        )
+                        .content("application/json", Content::new(Some(error.clone())))
+                        .build(),
+                )
+                .response(
+                    "503",
+                    ResponseBuilder::new()
+                        .description(
+                            "No capacity in the shared key pool, or the upstream is \
+                             overloaded.",
+                        )
+                        .content("application/json", Content::new(Some(error.clone())))
+                        .build(),
+                )
+                .response(
+                    "504",
+                    ResponseBuilder::new()
+                        .description("The request exceeded its deadline.")
+                        .content("application/json", Content::new(Some(error.clone())))
+                        .build(),
+                )
+                .build(),
+        )
+        // Operation-level override of the document's session/basic
+        // requirement: the bridge authenticates the *client*, not the
+        // operator.
+        .security(SecurityRequirement::new("client_key", Vec::<String>::new()))
+        .build()
+}
+
+/// Add the Messages-bridge additions to the generated spec: the
+/// `client_bearer` security scheme, the `messages` tag, and the single
+/// `createAnthropicMessage` operation at `POST /v1/messages`.
+fn add_messages_bridge(spec: &mut utoipa::openapi::OpenApi) {
+    spec.components
+        .as_mut()
+        .expect("components exist: every path declares a response schema")
+        .add_security_scheme("client_key", client_key_scheme());
+
+    let tags = spec.tags.get_or_insert_with(Vec::new);
+    if !tags.iter().any(|tag| tag.name == "messages") {
+        tags.push(Tag::new("messages"));
+    }
+    // `/v1/messages` sorts after every registered path in the spec's
+    // `BTreeMap`, so the committed spec gains a last entry under `paths` —
+    // the diff stays additions-only.
+    spec.paths.paths.insert(
+        crate::routes::MESSAGES.to_owned(),
+        PathItem::new(HttpMethod::Post, messages_bridge_operation()),
+    );
 }
 
 /// Serialized key order for a value, top level only.
