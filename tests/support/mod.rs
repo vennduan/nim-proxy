@@ -45,6 +45,9 @@ pub enum Behavior {
     /// Write large chunks without pause until downstream backpressure fills
     /// the proxy's response channel.
     FloodStream,
+    /// Send one committed text chunk, then break the upstream body with a
+    /// transport error — exercises the proxy's in-stream error path.
+    StreamBreak,
     /// Buffered response with an unknown `finish_reason` — exercises the
     /// server-side clamp that collapses odd values to `other`.
     OddFinish,
@@ -228,6 +231,33 @@ async fn mock_chat(
             });
             sse(Body::from_stream(stream))
         }
+        Behavior::StreamBreak => {
+            // One committed chunk, a beat, then the body breaks: the proxy
+            // reads the first chunk (committing the translated stream) before
+            // the abort lands on its next body read.
+            let stream = futures_util::stream::unfold(0, |state| async move {
+                match state {
+                    0 => Some((
+                        Ok::<_, std::io::Error>(Bytes::from(
+                            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"committed\"}}]}\n\n",
+                        )),
+                        1,
+                    )),
+                    1 => {
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        Some((
+                            Err(std::io::Error::new(
+                                std::io::ErrorKind::UnexpectedEof,
+                                "upstream broke the stream",
+                            )),
+                            2,
+                        ))
+                    }
+                    _ => None,
+                }
+            });
+            sse(Body::from_stream(stream))
+        }
         Behavior::Ok | Behavior::BadRequestIfInjected => {
             // Echo the request's shape so e2e can exercise the quality metrics:
             // a request that offers tools gets a tool_calls response, otherwise
@@ -238,10 +268,10 @@ async fn mock_chat(
                 let mut chunks: Vec<Result<Bytes, std::io::Error>> = Vec::new();
                 if offers_tools {
                     chunks.push(Ok(Bytes::from(
-                        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"get_weather\"}}]}}]}\n\n",
+                        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\"\"}}]}}]}\n\n",
                     )));
                     chunks.push(Ok(Bytes::from(
-                        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+                        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":\\\"Paris\\\"\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
                     )));
                 } else {
                     chunks.push(Ok(Bytes::from(

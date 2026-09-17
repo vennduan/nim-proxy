@@ -59,6 +59,7 @@ pub struct StreamTranslator {
 
     committed: bool,
     start_emitted: bool,
+    finishing: bool,
     finish_reason: Option<String>,
     input_tokens: u64,
     output_tokens: u64,
@@ -86,6 +87,7 @@ impl StreamTranslator {
             pending: Vec::new(),
             committed: false,
             start_emitted: false,
+            finishing: false,
             finish_reason: None,
             input_tokens: 0,
             output_tokens: 0,
@@ -120,23 +122,36 @@ impl StreamTranslator {
         out
     }
 
+    /// True once an Anthropic event committed: proxy control frames stop
+    /// reaching the client and upstream errors must surface as Anthropic
+    /// `error` events, not raw OpenAI frames.
+    pub fn committed(&self) -> bool {
+        self.committed
+    }
+
     /// End of stream: close the open blocks, emit `message_delta` +
     /// `message_stop`. For a stream that never committed to an event,
     /// instead replay every retained upstream byte byte-exact (the
     /// pre-T5 passthrough contract) — including control frames.
+    /// Safe to call more than once: only the first call yields events.
     pub fn finish(&mut self) -> Vec<Bytes> {
         if !self.committed {
-            std::mem::take(&mut self.retained)
-        } else {
-            let mut out: Vec<Bytes> = vec![];
-            self.decode(&mut out);
-            self.close_open_blocks(&mut out);
-            if self.start_emitted {
-                out.push(self.message_delta());
-                out.push(self.event("message_stop", &json!({ "type": "message_stop" })));
-            }
-            out
+            let out = std::mem::take(&mut self.retained);
+            self.committed = true;
+            return out;
         }
+        if self.finishing {
+            return Vec::new();
+        }
+        self.finishing = true;
+        let mut out: Vec<Bytes> = vec![];
+        self.decode(&mut out);
+        self.close_open_blocks(&mut out);
+        if self.start_emitted {
+            out.push(self.message_delta());
+            out.push(self.event("message_stop", &json!({ "type": "message_stop" })));
+        }
+        out
     }
 }
 
@@ -150,6 +165,23 @@ impl StreamTranslator {
             "event: {name}\ndata: {}\n\n",
             serde_json::to_string(data).unwrap_or_else(|_| "null".into())
         ))
+    }
+
+    /// An Anthropic in-stream `error` event, emitted when the upstream
+    /// fails after `message_start` committed. The terminal event of the
+    /// stream in this protocol: no `message_delta`/`message_stop` follow.
+    pub fn error_event(&self, code: &str, message: &str) -> Bytes {
+        self.event(
+            "error",
+            &json!({
+                "type": "error",
+                "error": {
+                    "type": "upstream_error",
+                    "code": code,
+                    "message": message
+                }
+            }),
+        )
     }
 
     /// `message_start`, emitted once on the first upstream event.

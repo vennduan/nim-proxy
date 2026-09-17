@@ -110,8 +110,10 @@ and admin-only sections before serialization. The focused multi-user E2E proof
 is `shared_observability_is_identical_across_roles_while_config_stays_scoped`.
 
 Generated OpenAPI describes 15 `/api` operations, two setup POST
-operations, and the Messages-bridge `createAnthropicMessage` operation (the
-SSE translator adds `anthropicSSEStream` at M2). The locale bootstrap is
+operations, and the Messages-bridge `createAnthropicMessage` operation,
+whose `text/event-stream` content references the `anthropicSSEStream`
+string schema (raw upstream bytes until commitment, then translated
+Anthropic events). The locale bootstrap is
 public with explicit `security: []`; the other 14 `/api` operations inherit
 operator authentication; the bridge names its `client_key` scheme explicitly
 instead of inheriting. HTML/form,
