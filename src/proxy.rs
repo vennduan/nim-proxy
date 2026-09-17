@@ -741,7 +741,11 @@ pub async fn handle_messages(
         .unwrap_or("none")
         .to_owned();
 
-    let payload = match crate::bridge::to_chat_payload(&anthropic) {
+    let anthropic_beta = headers
+        .get("anthropic-beta")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let payload = match crate::bridge::to_chat_payload(&anthropic, anthropic_beta) {
         Ok(payload) => payload,
         Err(
             bridge_error @ crate::bridge::BridgeError {

@@ -655,6 +655,23 @@ fn message_response_schema() -> Object {
                 .build(),
         )
         .build();
+    let thinking_block = ObjectBuilder::new()
+        .required("type")
+        .required("thinking")
+        .required("signature")
+        .property("type", string_enum(&["thinking"]))
+        .property("thinking", String::schema())
+        .property(
+            "signature",
+            ObjectBuilder::new()
+                .schema_type(Type::String)
+                .description(Some(
+                    "A synthetic `nimthinking_`-prefixed identity marker for the block; \
+                     it is not a cryptographic attestation of the thinking.",
+                ))
+                .build(),
+        )
+        .build();
     let usage = ObjectBuilder::new()
         .required("input_tokens")
         .required("output_tokens")
@@ -681,7 +698,12 @@ fn message_response_schema() -> Object {
         .property("model", String::schema())
         .property(
             "content",
-            one_of(vec![text_block.into(), tool_use_block.into()]).to_array(),
+            one_of(vec![
+                text_block.into(),
+                tool_use_block.into(),
+                thinking_block.into(),
+            ])
+            .to_array(),
         )
         .property(
             "stop_reason",

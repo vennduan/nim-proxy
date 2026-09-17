@@ -3479,20 +3479,18 @@ async fn messages_bridge_client_tool_schemas_echo_direct_caller() {
 
     let response = client()
         .post(proxy.url("/v1/messages"))
-        .json(
-            &serde_json::json!({
-                "model": "mock/model-a",
-                "max_tokens": 64,
-                "tools": [
-                    // Explicit name rides the wire; the generated bash schema
-                    // and catalog description fill in the rest.
-                    {"type": "bash_20250124", "name": "get_weather"},
-                    // Unnamed computer offer: family default name + schema.
-                    {"type": "computer_use_20251124"}
-                ],
-                "messages": [{"role": "user", "content": "run it"}]
-            }),
-        )
+        .json(&serde_json::json!({
+            "model": "mock/model-a",
+            "max_tokens": 64,
+            "tools": [
+                // Explicit name rides the wire; the generated bash schema
+                // and catalog description fill in the rest.
+                {"type": "bash_20250124", "name": "get_weather"},
+                // Unnamed computer offer: family default name + schema.
+                {"type": "computer_use_20251124"}
+            ],
+            "messages": [{"role": "user", "content": "run it"}]
+        }))
         .send()
         .await
         .unwrap();
@@ -3667,6 +3665,107 @@ async fn messages_bridge_maps_failures_into_anthropic_envelopes() {
         4,
         "400 rejections stay off the pipeline"
     );
+}
+
+/// A reasoning model's `reasoning_content` surfaces as a leading `thinking`
+/// block carrying a synthetic `nimthinking_` signature; an oversized budget
+/// is a typed 400 without the interleaved beta and a 200 with it.
+#[tokio::test]
+async fn messages_bridge_thinking_block_from_reasoning_content() {
+    let mock = start_mock().await;
+    let proxy = start_proxy(&mock.url, &[]).await;
+
+    let completion = serde_json::json!({
+        "id": "mock-r", "object": "chat.completion",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "reasoning_content": "  why 42  ",
+                "content": "42"
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 5}
+    });
+
+    // 200 path: valid thinking params, reasoning content in the response.
+    mock.state.push(support::Behavior::ExactResponse {
+        content_type: "application/json".to_owned(),
+        body: completion.to_string(),
+    });
+    let ok = client()
+        .post(proxy.url("/v1/messages"))
+        .json(&serde_json::json!({
+            "model": "mock/model-a",
+            "max_tokens": 4096,
+            "thinking": {"type": "enabled", "budget_tokens": 2048},
+            "messages": [{"role": "user", "content": "the answer"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), 200, "thinking request converts: {ok:?}");
+    let message: serde_json::Value = ok.json().await.unwrap();
+    let blocks = message["content"].as_array().expect("content");
+    assert_eq!(blocks.len(), 2, "thinking leads, then text: {message}");
+    assert_eq!(blocks[0]["type"], "thinking", "{message}");
+    assert_eq!(blocks[0]["thinking"], "why 42", "trimmed: {message}");
+    let signature = blocks[0]["signature"].as_str().expect("signature");
+    assert!(
+        signature.starts_with("nimthinking_"),
+        "the synthetic signature is advertised: {message}"
+    );
+    assert_eq!(blocks[1], serde_json::json!({"type": "text", "text": "42"}));
+    assert_eq!(message["stop_reason"], "end_turn", "{message}");
+
+    // 400 path: budget above max_tokens without the beta stays off the pipeline.
+    let rejected = client()
+        .post(proxy.url("/v1/messages"))
+        .json(&serde_json::json!({
+            "model": "mock/model-a",
+            "max_tokens": 1024,
+            "thinking": {"type": "enabled", "budget_tokens": 4096},
+            "messages": [{"role": "user", "content": "the answer"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        rejected.status(),
+        400,
+        "budget >= max_tokens is a typed 400"
+    );
+    let body: serde_json::Value = rejected.json().await.unwrap();
+    assert_eq!(body["type"], "error", "{body}");
+    assert_eq!(body["error"]["type"], "invalid_request_error", "{body}");
+    assert_eq!(body["error"]["code"], "invalid_thinking", "{body}");
+
+    // Same request under the interleaved beta with tools offered: 200.
+    mock.state.push(support::Behavior::ExactResponse {
+        content_type: "application/json".to_owned(),
+        body: completion.to_string(),
+    });
+    let interleaved = client()
+        .post(proxy.url("/v1/messages"))
+        .header("anthropic-beta", "interleaved-thinking-2025-05-14")
+        .json(&serde_json::json!({
+            "model": "mock/model-a",
+            "max_tokens": 1024,
+            "thinking": {"type": "enabled", "budget_tokens": 4096},
+            "tools": [{"name": "f"}],
+            "messages": [{"role": "user", "content": "the answer"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        interleaved.status(),
+        200,
+        "the beta licenses budget >= max_tokens with tools"
+    );
+
+    assert_eq!(mock.state.hit_count(), 2, "the 400 stays off the pipeline");
 }
 
 // ---------- correctness & security hardening (PR 6a) ----------

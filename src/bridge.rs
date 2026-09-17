@@ -8,6 +8,7 @@
 //! typed `BridgeError` (400), never silently dropped.
 
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 /// Request-side rejection / validation error.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,23 +47,30 @@ pub struct ToolMeta {
     pub family: ToolFamily,
 }
 
-/// Thinking mode resolved from the request. Full parameter validation
-/// (budget vs max_tokens, temperature/top_p constraints) is the thinking
-/// task; this carries the resolved mode.
+/// Thinking mode resolved and validated from the request.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ThinkingMeta {
     pub enabled: bool,
     pub budget_tokens: Option<u64>,
+    /// True when the request carried the interleaved-thinking beta with
+    /// tools offered — the one case `budget_tokens >= max_tokens` is legal.
+    pub interleaved: bool,
 }
+
+/// Floor on an enabled thinking budget.
+pub const MIN_THINKING_BUDGET: u64 = 1024;
+
+/// The beta flag that admits interleaved thinking with tools.
+pub const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
 
 /// Result of the request transform.
 #[derive(Clone, Debug)]
 pub struct ChatPayload {
     /// The OpenAI chat-completions request body to send upstream.
     pub json: Value,
-    // Forward-looking fields: the streaming translator (T6) and thinking
-    // validation (T8) consume these; T4 routes on `json`/`tool_meta` only,
-    // so they stay unread in the lib build.
+    // Forward-looking fields: the streaming translator (T6) consumes these;
+    // the bridge route reads `json` and `tool_meta` only, so the rest stay
+    // unread in the lib build.
     #[allow(dead_code)]
     /// Normalized OpenAI function tool definitions.
     pub tools: Vec<Value>,
@@ -75,6 +83,7 @@ pub struct ChatPayload {
     /// `true` when `tool_choice` forces a specific tool.
     pub forced_tool: bool,
     #[allow(dead_code)]
+    /// The validated thinking mode for the response transform.
     pub thinking: ThinkingMeta,
 }
 
@@ -515,17 +524,60 @@ fn check_allowed_callers(v: Option<&Value>) -> Result<(), BridgeError> {
     }
 }
 
-fn resolve_thinking(v: Option<&Value>) -> ThinkingMeta {
+/// Resolve and validate the `thinking` param. The rules ported from
+/// nim4cc: enabled requires an integer `budget_tokens` at or above
+/// `MIN_THINKING_BUDGET`; a custom `temperature` is rejected; `top_p` is
+/// restricted to [0.95, 1.0]; forced `tool_choice` and an assistant
+/// prefill (last message is assistant with any content besides
+/// redacted_thinking) are rejected; `budget_tokens >= max_tokens` is
+/// rejected unless the interleaved-thinking beta is present with tools.
+/// Single call site passing the request's own fields; not a struct.
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_thinking(
+    v: Option<&Value>,
+    max_tokens: Option<&Value>,
+    temperature: Option<&Value>,
+    top_p: Option<&Value>,
+    forced_tool: bool,
+    tools: Option<&Value>,
+    messages: Option<&Value>,
+    beta: &str,
+) -> Result<ThinkingMeta, BridgeError> {
+    fn invalid(code: &'static str, message: &str) -> BridgeError {
+        BridgeError {
+            code,
+            message: message.to_string(),
+        }
+    }
+    let interleaved = beta
+        .split(',')
+        .map(|f| f.trim())
+        .any(|f| f == INTERLEAVED_THINKING_BETA);
+    let offers_tools = tools
+        .and_then(Value::as_array)
+        .is_some_and(|tools| !tools.is_empty());
+    let interleaved = interleaved && offers_tools;
     let Some(v) = v else {
-        return ThinkingMeta::default();
+        return Ok(ThinkingMeta {
+            interleaved,
+            ..Default::default()
+        });
     };
     let (kind, budget) = match v {
         Value::Bool(b) => (*b, None),
         Value::Object(o) => {
             let kind = match o.get("type").and_then(Value::as_str) {
-                Some("enabled") => true,
-                Some("disabled") => false,
-                _ => o.get("enabled").and_then(Value::as_bool).unwrap_or(false),
+                Some("enabled" | "enable" | "on" | "true") => true,
+                Some("disabled" | "disable" | "off" | "false") => false,
+                Some(t) => {
+                    return Err(invalid(
+                        "invalid_thinking",
+                        &format!(
+                            "thinking.type only supports enabled or disabled, got {t:?}"
+                        ),
+                    ))
+                }
+                None => o.get("enabled").and_then(Value::as_bool).unwrap_or(false),
             };
             let budget = o
                 .get("budget_tokens")
@@ -533,12 +585,95 @@ fn resolve_thinking(v: Option<&Value>) -> ThinkingMeta {
                 .and_then(Value::as_u64);
             (kind, budget)
         }
-        _ => (false, None),
+        _ => {
+            return Err(invalid(
+                "invalid_thinking",
+                "thinking must be a boolean or an object",
+            ))
+        }
     };
-    ThinkingMeta {
-        enabled: kind,
-        budget_tokens: budget,
+    if !kind {
+        return Ok(ThinkingMeta::default());
     }
+    let Some(budget) = budget else {
+        return Err(invalid(
+            "invalid_thinking",
+            "thinking.enabled requires an integer budget_tokens",
+        ));
+    };
+    if budget < MIN_THINKING_BUDGET {
+        return Err(invalid(
+            "invalid_thinking",
+            &format!("thinking.budget_tokens must be at least {MIN_THINKING_BUDGET}"),
+        ));
+    }
+    if let Some(max) = max_tokens.and_then(Value::as_u64) {
+        if budget >= max && !interleaved {
+            return Err(invalid(
+                "invalid_thinking",
+                "thinking.budget_tokens must be below max_tokens unless the \
+                 interleaved-thinking beta is enabled with tools",
+            ));
+        }
+    }
+    if temperature.is_some() {
+        return Err(invalid(
+            "invalid_thinking",
+            "thinking mode does not support a custom temperature",
+        ));
+    }
+    if let Some(p) = top_p.and_then(Value::as_f64) {
+        if !(0.95..=1.0).contains(&p) {
+            return Err(invalid(
+                "invalid_thinking",
+                "thinking mode restricts top_p to 0.95..=1.0",
+            ));
+        }
+    }
+    if forced_tool {
+        return Err(invalid(
+            "invalid_thinking",
+            "thinking mode does not support a forced tool choice",
+        ));
+    }
+    if let Some(msgs) = messages.and_then(Value::as_array) {
+        if let Some(last) = msgs.last() {
+            let prefill = last
+                .get("role")
+                .and_then(Value::as_str)
+                .is_some_and(|r| r == "assistant")
+                && last
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .is_some_and(|blocks| {
+                        blocks.iter().any(|b| {
+                            b.get("type").and_then(Value::as_str) != Some("redacted_thinking")
+                        })
+                    });
+            if prefill {
+                return Err(invalid(
+                    "invalid_thinking",
+                    "thinking mode does not support an assistant prefill as the last message",
+                ));
+            }
+        }
+    }
+    Ok(ThinkingMeta {
+        enabled: true,
+        budget_tokens: Some(budget),
+        interleaved,
+    })
+}
+
+/// The synthetic signature on an emitted `thinking` block: a tagged
+/// SHA-256 digest of the request model and the thinking text. It is
+/// documented as synthetic — this is an identity marker, not a
+/// cryptographic attestation of the thinking.
+fn synthetic_thinking_signature(model: &str, text: &str) -> String {
+    use base64::{engine::general_purpose::URL_SAFE, Engine};
+    let digest = Sha256::digest(format!("{model}\n{text}").as_bytes());
+    let encoded = URL_SAFE.encode(digest).trim_end_matches('=').to_string();
+    format!("nimthinking_{encoded}")
 }
 
 /// `tool_choice` in the Anthropic dialect, in both the string and the
@@ -589,9 +724,10 @@ fn map_tool_choice(v: Option<&Value>) -> Result<(Option<Value>, bool), BridgeErr
 /// tool-schema task — the family name is carried in `tool_meta`);
 /// `stop_sequences` becomes `stop`.
 ///
-/// Rejected with a typed error: `mcp_servers`, `mcp_toolset` tools, and
-/// `allowed_callers` lacking `direct`.
-pub fn to_chat_payload(body: &Value) -> Result<ChatPayload, BridgeError> {
+/// Rejected with a typed error: `mcp_servers`, `mcp_toolset` tools,
+/// `allowed_callers` lacking `direct`, and invalid `thinking`
+/// combinations. `beta` is the raw `anthropic-beta` header value.
+pub fn to_chat_payload(body: &Value, beta: &str) -> Result<ChatPayload, BridgeError> {
     let mut ids = IdState::new();
     let Some(model) = body.get("model").and_then(Value::as_str) else {
         return Err(BridgeError::new("missing_model", "model is required"));
@@ -772,7 +908,16 @@ pub fn to_chat_payload(body: &Value) -> Result<ChatPayload, BridgeError> {
     }
 
     let (tool_choice, forced_tool) = map_tool_choice(body.get("tool_choice"))?;
-    let thinking = resolve_thinking(body.get("thinking"));
+    let thinking = resolve_thinking(
+        body.get("thinking"),
+        body.get("max_tokens"),
+        body.get("temperature"),
+        body.get("top_p"),
+        forced_tool,
+        body.get("tools"),
+        body.get("messages"),
+        beta,
+    )?;
 
     let mut payload = json!({ "model": model, "messages": messages });
     if let Some(v) = body.get("max_tokens").filter(|v| !v.is_null()) {
@@ -848,6 +993,20 @@ pub fn chat_to_message(completion: &Value, req_model: &str, tool_meta: &[ToolMet
 
     if let Some(choice) = choice {
         let message = choice.get("message").cloned().unwrap_or(Value::Null);
+        // Reasoning models surface their chain of thought in
+        // `reasoning_content`; that becomes a leading `thinking` block
+        // carrying a synthetic signature (documented as such — an
+        // identity marker, not cryptographic thinking integrity).
+        if let Some(reasoning) = message.get("reasoning_content").and_then(Value::as_str) {
+            let trimmed = reasoning.trim();
+            if !trimmed.is_empty() {
+                content.push(json!({
+                    "type": "thinking",
+                    "thinking": trimmed,
+                    "signature": synthetic_thinking_signature(req_model, trimmed)
+                }));
+            }
+        }
         if let Some(text) = message.get("content").and_then(Value::as_str) {
             if !text.is_empty() {
                 content.push(json!({ "type": "text", "text": text }));
@@ -1084,12 +1243,12 @@ mod tests {
     use super::*;
 
     fn conv(body: &Value) -> ChatPayload {
-        to_chat_payload(body).expect("transform succeeds")
+        to_chat_payload(body, "").expect("transform succeeds")
     }
 
     #[test]
     fn red_model_is_required() {
-        let r = to_chat_payload(&json!({ "messages": [] }));
+        let r = to_chat_payload(&json!({ "messages": [] }), "");
         assert!(
             matches!(
                 r,
@@ -1206,11 +1365,14 @@ mod tests {
 
     #[test]
     fn red_mcp_servers_rejected() {
-        let r = to_chat_payload(&json!({
-            "model": "m",
-            "mcp_servers": { "github": {} },
-            "messages": []
-        }));
+        let r = to_chat_payload(
+            &json!({
+                "model": "m",
+                "mcp_servers": { "github": {} },
+                "messages": []
+            }),
+            "",
+        );
         assert!(
             matches!(
                 r,
@@ -1225,11 +1387,14 @@ mod tests {
 
     #[test]
     fn red_mcp_toolset_rejected() {
-        let r = to_chat_payload(&json!({
-            "model": "m",
-            "tools": [{ "type": "mcp_toolset", "mcp_server_name": "github" }],
-            "messages": []
-        }));
+        let r = to_chat_payload(
+            &json!({
+                "model": "m",
+                "tools": [{ "type": "mcp_toolset", "mcp_server_name": "github" }],
+                "messages": []
+            }),
+            "",
+        );
         assert!(
             matches!(
                 r,
@@ -1244,15 +1409,18 @@ mod tests {
 
     #[test]
     fn red_programmatic_callers_rejected() {
-        let r = to_chat_payload(&json!({
-            "model": "m",
-            "tools": [{
-                "type": "bash_20250124",
-                "name": "bash",
-                "allowed_callers": ["programmatic"]
-            }],
-            "messages": []
-        }));
+        let r = to_chat_payload(
+            &json!({
+                "model": "m",
+                "tools": [{
+                    "type": "bash_20250124",
+                    "name": "bash",
+                    "allowed_callers": ["programmatic"]
+                }],
+                "messages": []
+            }),
+            "",
+        );
         assert!(
             matches!(
                 r,
@@ -1404,11 +1572,14 @@ mod tests {
             "code_execution_20250825",
             "python_20250414",
         ] {
-            let r = to_chat_payload(&json!({
-                "model": "m",
-                "tools": [{ "type": type_str, "name": "x" }],
-                "messages": []
-            }));
+            let r = to_chat_payload(
+                &json!({
+                    "model": "m",
+                    "tools": [{ "type": type_str, "name": "x" }],
+                    "messages": []
+                }),
+                "",
+            );
             assert!(
                 matches!(
                     r,
@@ -1424,12 +1595,15 @@ mod tests {
 
     #[test]
     fn red_tool_choice_named_without_name_rejected() {
-        let r = to_chat_payload(&json!({
-            "model": "m",
-            "tools": [{ "name": "f" }],
-            "tool_choice": { "type": "tool" },
-            "messages": []
-        }));
+        let r = to_chat_payload(
+            &json!({
+                "model": "m",
+                "tools": [{ "name": "f" }],
+                "tool_choice": { "type": "tool" },
+                "messages": []
+            }),
+            "",
+        );
         assert!(
             matches!(
                 r,
@@ -1493,22 +1667,305 @@ mod tests {
     fn green_param_passthrough_and_thinking_presence() {
         let p = conv(&json!({
             "model": "m",
-            "max_tokens": 32,
-            "temperature": 0.3,
-            "top_p": 0.9,
+            "max_tokens": 4096,
+            "top_p": 0.95,
             "seed": 7,
             "stop_sequences": ["\n\n"],
-            "thinking": { "type": "enabled", "budget_tokens": 256 },
+            "thinking": { "type": "enabled", "budget_tokens": 2048 },
             "messages": []
         }));
-        assert_eq!(p.json["max_tokens"], 32);
-        assert_eq!(p.json["temperature"], 0.3);
-        assert_eq!(p.json["top_p"], 0.9);
+        assert_eq!(p.json["max_tokens"], 4096);
+        assert_eq!(p.json["top_p"], 0.95);
         assert_eq!(p.json["seed"], 7);
         assert_eq!(p.json["stop"], json!(["\n\n"]));
         assert!(p.thinking.enabled);
-        assert_eq!(p.thinking.budget_tokens, Some(256));
+        assert_eq!(p.thinking.budget_tokens, Some(2048));
+        assert!(!p.thinking.interleaved);
         assert!(p.json.get("thinking").is_none());
+    }
+
+    #[test]
+    fn green_thinking_reasoning_content_emits_leading_block() {
+        let m = cm(&json!({
+            "id": "chatcmpl-r1",
+            "model": "nim-m",
+            "choices": [{
+                "message": { "reasoning_content": "  let me think  ", "content": "hi" },
+                "finish_reason": "stop"
+            }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 2 }
+        }));
+        let blocks = m["content"].as_array().expect("content");
+        assert_eq!(blocks.len(), 2, "thinking leads, then text: {blocks:?}");
+        assert_eq!(blocks[0]["type"], "thinking");
+        assert_eq!(blocks[0]["thinking"], "let me think", "trimmed, not raw");
+        let sig = blocks[0]["signature"].as_str().expect("signature");
+        assert!(sig.starts_with("nimthinking_"), "{sig:?}");
+        assert!(!sig.contains('='), "urlsafe base64, padding stripped");
+        assert_eq!(blocks[1], json!({ "type": "text", "text": "hi" }));
+    }
+
+    #[test]
+    fn green_thinking_signature_is_deterministic_and_model_bound() {
+        let sig = synthetic_thinking_signature("model-a", "text");
+        assert_eq!(sig, synthetic_thinking_signature("model-a", "text"));
+        assert_ne!(sig, synthetic_thinking_signature("model-b", "text"));
+        assert_ne!(sig, synthetic_thinking_signature("model-a", "other"));
+    }
+
+    #[test]
+    fn green_thinking_blank_reasoning_is_not_emitted() {
+        let m = cm(&json!({
+            "id": "chatcmpl-r2",
+            "model": "nim-m",
+            "choices": [{
+                "message": { "reasoning_content": "   ", "content": "hi" },
+                "finish_reason": "stop"
+            }],
+            "usage": {}
+        }));
+        let blocks = m["content"].as_array().expect("content");
+        assert_eq!(blocks.len(), 1, "blank reasoning must not create a block");
+        assert_eq!(blocks[0]["type"], "text");
+    }
+
+    #[test]
+    fn green_interleaved_beta_licenses_budget_at_max_tokens() {
+        let body = json!({
+            "model": "m",
+            "max_tokens": 2048,
+            "thinking": { "type": "enabled", "budget_tokens": 2048 },
+            "tools": [{ "name": "f" }],
+            "messages": []
+        });
+        let p = to_chat_payload(&body, INTERLEAVED_THINKING_BETA)
+            .expect("budget == max is legal under the interleaved beta");
+        assert!(p.thinking.enabled);
+        assert!(p.thinking.interleaved, "beta + tools offered");
+
+        // Same request, no beta: the `>=` boundary must fall back to 400.
+        let r = to_chat_payload(&body, "");
+        assert!(
+            matches!(
+                r,
+                Err(BridgeError {
+                    code: "invalid_thinking",
+                    ..
+                })
+            ),
+            "{r:?}"
+        );
+    }
+
+    #[test]
+    fn green_beta_without_tools_keeps_strict_budget_rule() {
+        let body = json!({
+            "model": "m",
+            "max_tokens": 1024,
+            "thinking": { "type": "enabled", "budget_tokens": 1024 },
+            "messages": []
+        });
+        let r = to_chat_payload(&body, INTERLEAVED_THINKING_BETA);
+        assert!(
+            matches!(
+                r,
+                Err(BridgeError {
+                    code: "invalid_thinking",
+                    ..
+                })
+            ),
+            "the beta only relaxes the rule when tools are offered; {r:?}"
+        );
+    }
+
+    #[test]
+    fn green_thinking_disabled_is_a_no_op() {
+        let p = conv(&json!({
+            "model": "m",
+            "thinking": { "type": "disabled", "budget_tokens": 0 },
+            "messages": []
+        }));
+        assert_eq!(p.thinking, ThinkingMeta::default());
+        assert!(!p.thinking.enabled);
+    }
+
+    #[test]
+    fn red_thinking_budget_below_floor() {
+        let r = to_chat_payload(
+            &json!({
+                "model": "m",
+                "thinking": { "type": "enabled", "budget_tokens": 512 },
+                "messages": []
+            }),
+            "",
+        );
+        assert!(
+            matches!(
+                r,
+                Err(BridgeError {
+                    code: "invalid_thinking",
+                    ..
+                })
+            ),
+            "{r:?}"
+        );
+    }
+
+    #[test]
+    fn red_thinking_enabled_requires_budget() {
+        for v in [
+            json!({ "type": "enabled" }),
+            json!(true),
+            json!({ "enabled": true }),
+        ] {
+            let r = to_chat_payload(&json!({ "model": "m", "thinking": v, "messages": [] }), "");
+            assert!(
+                matches!(
+                    r,
+                    Err(BridgeError {
+                        code: "invalid_thinking",
+                        ..
+                    })
+                ),
+                "missing budget: {v:?} -> {r:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn red_thinking_malformed_shape_or_type() {
+        for v in [json!("always"), json!({ "type": "sometimes" }), json!(null)] {
+            let r = to_chat_payload(&json!({ "model": "m", "thinking": v, "messages": [] }), "");
+            assert!(
+                matches!(
+                    r,
+                    Err(BridgeError {
+                        code: "invalid_thinking",
+                        ..
+                    })
+                ),
+                "malformed thinking: {v:?} -> {r:?}"
+            );
+        }
+        // A null type reads as an object without an `enabled` flag: disabled.
+        let p = conv(&json!({ "model": "m", "thinking": { "type": null }, "messages": [] }));
+        assert!(!p.thinking.enabled);
+    }
+
+    #[test]
+    fn red_thinking_rejects_temperature_and_top_p() {
+        let r = to_chat_payload(
+            &json!({
+                "model": "m",
+                "thinking": { "type": "enabled", "budget_tokens": 2048 },
+                "temperature": 0.2,
+                "messages": []
+            }),
+            "",
+        );
+        assert!(
+            matches!(
+                r,
+                Err(BridgeError {
+                    code: "invalid_thinking",
+                    ..
+                })
+            ),
+            "any temperature is rejected in thinking mode; {r:?}"
+        );
+
+        let r = to_chat_payload(
+            &json!({
+                "model": "m",
+                "thinking": { "type": "enabled", "budget_tokens": 2048 },
+                "top_p": 0.5,
+                "messages": []
+            }),
+            "",
+        );
+        assert!(
+            matches!(
+                r,
+                Err(BridgeError {
+                    code: "invalid_thinking",
+                    ..
+                })
+            ),
+            "top_p below 0.95 is rejected; {r:?}"
+        );
+
+        // The 0.95 boundary is inclusive.
+        let p = conv(&json!({
+            "model": "m",
+            "thinking": { "type": "enabled", "budget_tokens": 2048 },
+            "top_p": 0.95,
+            "messages": []
+        }));
+        assert!(p.thinking.enabled);
+    }
+
+    #[test]
+    fn red_thinking_rejects_forced_tool_choice() {
+        let r = to_chat_payload(
+            &json!({
+                "model": "m",
+                "thinking": { "type": "enabled", "budget_tokens": 2048 },
+                "tools": [{ "name": "f" }],
+                "tool_choice": "any",
+                "messages": []
+            }),
+            "",
+        );
+        assert!(
+            matches!(
+                r,
+                Err(BridgeError {
+                    code: "invalid_thinking",
+                    ..
+                })
+            ),
+            "forced tool choice is unsupported with thinking; {r:?}"
+        );
+    }
+
+    #[test]
+    fn red_thinking_rejects_assistant_prefill_but_not_redacted() {
+        let r = to_chat_payload(
+            &json!({
+                "model": "m",
+                "thinking": { "type": "enabled", "budget_tokens": 2048 },
+                "messages": [
+                    { "role": "user", "content": "q" },
+                    { "role": "assistant", "content": [
+                        { "type": "text", "text": "half-answered" }
+                    ] }
+                ]
+            }),
+            "",
+        );
+        assert!(
+            matches!(
+                r,
+                Err(BridgeError {
+                    code: "invalid_thinking",
+                    ..
+                })
+            ),
+            "assistant prefill as the last message is rejected; {r:?}"
+        );
+
+        // A lone redacted_thinking block is the one permitted prefill.
+        let p = conv(&json!({
+            "model": "m",
+            "thinking": { "type": "enabled", "budget_tokens": 2048 },
+            "messages": [
+                { "role": "user", "content": "q" },
+                { "role": "assistant", "content": [
+                    { "type": "redacted_thinking", "data": "opaque" }
+                ] }
+            ]
+        }));
+        assert!(p.thinking.enabled);
     }
 
     #[test]
@@ -1820,15 +2277,18 @@ mod tests {
 
     #[test]
     fn red_computer_programmatic_callers_rejected() {
-        let r = to_chat_payload(&json!({
-            "model": "m",
-            "tools": [{
-                "type": "computer_use_20250124",
-                "name": "computer",
-                "allowed_callers": ["programmatic"]
-            }],
-            "messages": []
-        }));
+        let r = to_chat_payload(
+            &json!({
+                "model": "m",
+                "tools": [{
+                    "type": "computer_use_20250124",
+                    "name": "computer",
+                    "allowed_callers": ["programmatic"]
+                }],
+                "messages": []
+            }),
+            "",
+        );
         assert!(
             matches!(
                 r,

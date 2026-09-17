@@ -831,6 +831,7 @@ name = "nim-proxy"
 version = "0.6.6"
 dependencies = [
  "axum",
+ "base64",
  "bytes",
  "dotenvy",
  "futures-util",
