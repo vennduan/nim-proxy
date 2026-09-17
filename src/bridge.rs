@@ -41,6 +41,8 @@ pub enum ToolFamily {
 /// transform and the tool-type metric.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolMeta {
+    /// Normalized name the tool offer reached the upstream under.
+    pub name: String,
     pub family: ToolFamily,
 }
 
@@ -58,9 +60,9 @@ pub struct ThinkingMeta {
 pub struct ChatPayload {
     /// The OpenAI chat-completions request body to send upstream.
     pub json: Value,
-    // Forward-looking fields: the streaming translator (T6), the client tool
-    // schemas (T7), and thinking validation (T8) consume these. T4 routes on
-    // `json`/`tool_meta` only, so they stay unread in the lib build for now.
+    // Forward-looking fields: the streaming translator (T6) and thinking
+    // validation (T8) consume these; T4 routes on `json`/`tool_meta` only,
+    // so they stay unread in the lib build.
     #[allow(dead_code)]
     /// Normalized OpenAI function tool definitions.
     pub tools: Vec<Value>,
@@ -307,12 +309,178 @@ fn check_unknown_tool_type(tool_type: Option<&str>) -> Result<(), BridgeError> {
 fn family_default_name(family: ToolFamily) -> String {
     match family {
         ToolFamily::Bash => "bash".into(),
-        ToolFamily::TextEditor => "text_editor".into(),
+        // Anthropic's canonical client-tool name, so echoed `tool_use`
+        // blocks match what the Anthropic API itself would have returned.
+        ToolFamily::TextEditor => "str_replace_based_edit_tool".into(),
         ToolFamily::Memory => "memory".into(),
         ToolFamily::Computer => "computer".into(),
         ToolFamily::WebSearch => "web_search".into(),
         ToolFamily::WebFetch => "web_fetch".into(),
         ToolFamily::Custom => "tool".into(),
+    }
+}
+
+/// Catalog-style description fallbacks for the client tool families: a tool
+/// offer that carries no description still reaches the upstream with usable
+/// copy, instead of a null.
+fn client_tool_description(family: ToolFamily) -> Option<&'static str> {
+    match family {
+        ToolFamily::Bash => Some("Execute shell commands in a persistent bash session."),
+        ToolFamily::TextEditor => Some("View and edit text files with command-based operations."),
+        ToolFamily::Computer => Some(
+            "Interact with a computer UI using screenshots, clicks, typing, keys, \
+             scrolling, and drag actions.",
+        ),
+        ToolFamily::Memory => {
+            Some("Read and edit persistent memory files with command-based operations.")
+        }
+        _ => None,
+    }
+}
+
+/// An integer pair property: `view_range`, `coordinate`, and friends.
+fn int_pair(description: &str) -> Value {
+    json!({
+        "type": "array",
+        "items": { "type": "integer" },
+        "minItems": 2,
+        "maxItems": 2,
+        "description": description
+    })
+}
+
+fn bash_tool_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": "The shell command to execute in the persistent bash session."
+            },
+            "restart": {
+                "type": "boolean",
+                "description": "Restart the persistent bash session before running the next command."
+            }
+        }
+    })
+}
+
+fn text_editor_tool_schema(tool_type: Option<&str>) -> Value {
+    let legacy = matches!(
+        tool_type,
+        Some(t) if t.ends_with("20241022") || t.ends_with("20250124")
+    );
+    let mut commands = vec!["view", "create", "str_replace", "insert"];
+    if legacy {
+        commands.push("undo_edit");
+    }
+    json!({
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "enum": commands,
+                "description": "The editor operation to perform."
+            },
+            "path": { "type": "string", "description": "Absolute or relative path to the target file." },
+            "view_range": int_pair("Inclusive start/end line numbers for view operations."),
+            "file_text": { "type": "string", "description": "Full file contents when creating a file." },
+            "old_str": { "type": "string", "description": "Existing text to replace." },
+            "new_str": { "type": "string", "description": "Replacement text for str_replace." },
+            "insert_line": { "type": "integer", "description": "Line number to insert text before." },
+            "insert_text": { "type": "string", "description": "Text to insert." }
+        }
+    })
+}
+
+fn memory_tool_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "enum": ["view", "create", "str_replace", "insert", "delete", "rename"],
+                "description": "The memory operation to perform under the memory directory."
+            },
+            "path": { "type": "string", "description": "Path to the memory file." },
+            "new_path": { "type": "string", "description": "New path when renaming a memory file." },
+            "view_range": int_pair("Inclusive start/end line numbers for view operations."),
+            "file_text": { "type": "string", "description": "Full file contents when creating a memory file." },
+            "old_str": { "type": "string", "description": "Existing text to replace." },
+            "new_str": { "type": "string", "description": "Replacement text for str_replace." },
+            "insert_line": { "type": "integer", "description": "Line number to insert text before." },
+            "insert_text": { "type": "string", "description": "Text to insert." }
+        }
+    })
+}
+
+fn computer_tool_schema(tool_type: Option<&str>) -> Value {
+    let mut actions = vec![
+        "screenshot",
+        "left_click",
+        "right_click",
+        "middle_click",
+        "double_click",
+        "triple_click",
+        "mouse_move",
+        "left_click_drag",
+        "left_mouse_down",
+        "left_mouse_up",
+        "scroll",
+        "type",
+        "key",
+        "hold_key",
+        "wait",
+    ];
+    if tool_type.is_some_and(|t| t.ends_with("20251124")) {
+        actions.push("zoom");
+    }
+    json!({
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": actions,
+                "description": "The computer action to perform."
+            },
+            "coordinate": int_pair("X/Y coordinate for click and move actions."),
+            "start_coordinate": int_pair("Start coordinate for drag actions."),
+            "end_coordinate": int_pair("End coordinate for drag actions."),
+            "text": { "type": "string", "description": "Text to type or zoom target text." },
+            "key": { "type": "string", "description": "Keyboard key or key chord to press." },
+            "duration": { "type": "number", "description": "Optional wait duration in seconds." },
+            "scroll_direction": {
+                "type": "string",
+                "enum": ["up", "down", "left", "right"],
+                "description": "Scroll direction."
+            },
+            "scroll_amount": { "type": "integer", "description": "Scroll distance in pixels or wheel units." },
+            "region": {
+                "type": "array",
+                "items": { "type": "integer" },
+                "minItems": 4,
+                "maxItems": 4,
+                "description": "Optional region [left, top, width, height] for screenshots."
+            },
+            "modifiers": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Modifier keys to hold during the action."
+            }
+        }
+    })
+}
+
+/// The generated `parameters` for a client tool family, when the request
+/// offers no explicit `input_schema`. Server-side and custom families have
+/// no generated schema — their offers fall back to the empty object.
+fn client_tool_parameters(family: ToolFamily, tool_type: Option<&str>) -> Option<Value> {
+    match family {
+        ToolFamily::Bash => Some(bash_tool_schema()),
+        ToolFamily::TextEditor => Some(text_editor_tool_schema(tool_type)),
+        ToolFamily::Memory => Some(memory_tool_schema()),
+        ToolFamily::Computer => Some(computer_tool_schema(tool_type)),
+        _ => None,
     }
 }
 
@@ -582,16 +750,25 @@ pub fn to_chat_payload(body: &Value) -> Result<ChatPayload, BridgeError> {
         let schema = tool
             .get("input_schema")
             .cloned()
+            .or_else(|| client_tool_parameters(family, tool_type))
             .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
+        let description = tool
+            .get("description")
+            .cloned()
+            .or_else(|| client_tool_description(family).map(|d| Value::String(d.to_string())))
+            .unwrap_or(Value::Null);
         tools.push(json!({
             "type": "function",
             "function": {
                 "name": name,
-                "description": tool.get("description").cloned().unwrap_or(Value::Null),
+                "description": description,
                 "parameters": schema
             }
         }));
-        tool_meta.push(ToolMeta { family });
+        tool_meta.push(ToolMeta {
+            name: name.clone(),
+            family,
+        });
     }
 
     let (tool_choice, forced_tool) = map_tool_choice(body.get("tool_choice"))?;
@@ -658,7 +835,7 @@ pub fn to_chat_payload(body: &Value) -> Result<ChatPayload, BridgeError> {
 /// finish reason with emitted tool_use blocks → `tool_use`; otherwise
 /// `end_turn` (fail-closed: an unknown reason with no tool blocks still
 /// reports a terminal stop).
-pub fn chat_to_message(completion: &Value, req_model: &str) -> Value {
+pub fn chat_to_message(completion: &Value, req_model: &str, tool_meta: &[ToolMeta]) -> Value {
     let choices = completion
         .get("choices")
         .and_then(Value::as_array)
@@ -702,12 +879,24 @@ pub fn chat_to_message(completion: &Value, req_model: &str) -> Value {
                     None => format!("toolu_bridge_call_{i}"),
                 };
                 tool_call_ids.push(id.clone());
-                content.push(json!({
+                let mut block = json!({
                     "type": "tool_use",
                     "id": id,
                     "name": name,
                     "input": input
-                }));
+                });
+                // This gateway offers no server execution: every tool_use it
+                // emits is run by the caller, so the direct caller is echoed
+                // (nim4cc's `caller: {type: "direct"}`). Web families are
+                // reserved for in-gateway execution (T10) and carry none.
+                let client_offered = tool_meta.iter().any(|m| {
+                    m.name == name
+                        && !matches!(m.family, ToolFamily::WebSearch | ToolFamily::WebFetch)
+                });
+                if client_offered {
+                    block["caller"] = json!({ "type": "direct" });
+                }
+                content.push(block);
             }
         }
     }
@@ -756,7 +945,7 @@ pub fn chat_to_message(completion: &Value, req_model: &str) -> Value {
 #[cfg(test)]
 mod tests {
     fn cm(completion: &Value) -> Value {
-        chat_to_message(completion, "client-model")
+        chat_to_message(completion, "client-model", &[])
     }
 
     #[test]
@@ -988,11 +1177,30 @@ mod tests {
                 "tools": [{ "type": type_str, "name": "tool1" }],
                 "messages": []
             }));
-            assert_eq!(
-                p.tool_meta.first().expect("meta").family,
-                family,
-                "{type_str}"
-            );
+            let meta = p.tool_meta.first().expect("meta");
+            assert_eq!(meta.family, family, "{type_str}");
+            assert_eq!(meta.name, "tool1", "{type_str}: explicit name stored");
+            // The explicit name rides the wire; the default name is only for
+            // offers that name nothing.
+            assert_eq!(p.tools[0]["function"]["name"], "tool1");
+        }
+    }
+
+    #[test]
+    fn green_family_default_names_without_offered_names() {
+        for (type_str, default_name) in [
+            ("bash_20250124", "bash"),
+            ("text_editor_20250728", "str_replace_based_edit_tool"),
+            ("memory_20250818", "memory"),
+            ("computer_use_20250124", "computer"),
+        ] {
+            let p = conv(&json!({
+                "model": "m",
+                "tools": [{ "type": type_str }],
+                "messages": []
+            }));
+            assert_eq!(p.tools[0]["function"]["name"], default_name, "{type_str}");
+            assert_eq!(p.tool_meta[0].name, default_name, "{type_str}");
         }
     }
 
@@ -1368,5 +1576,268 @@ mod tests {
         let msgs = p.json["messages"].as_array().expect("messages");
         assert_eq!(msgs[0]["role"], "system");
         assert_eq!(msgs[0]["content"], "house rules");
+    }
+
+    // T7: client tool schemas.
+
+    /// Every emitted OpenAI tool must hold the function shape: `type`
+    /// function, a string name, and an object parameter schema.
+    fn assert_openai_function_shape(t: &Value, label: &str) {
+        assert_eq!(t["type"], "function", "{label}");
+        assert!(
+            t["function"]["name"].is_string(),
+            "{label}: name must be a string"
+        );
+        let params = &t["function"]["parameters"];
+        assert_eq!(params["type"], "object", "{label}");
+        assert!(
+            params.get("properties").is_some_and(|p| p.is_object()),
+            "{label}: object parameters carry a properties map"
+        );
+    }
+
+    #[test]
+    fn green_client_families_carry_generated_schemas() {
+        let cases: &[(&str, &str, &str)] = &[
+            ("bash_20250124", "bash", "command"),
+            (
+                "text_editor_20250728",
+                "str_replace_based_edit_tool",
+                "command",
+            ),
+            ("memory_20250818", "memory", "command"),
+            ("computer_use_20250124", "computer", "action"),
+        ];
+        for &(type_str, default_name, prop) in cases {
+            let p = conv(&json!({
+                "model": "m",
+                "tools": [{ "type": type_str }],
+                "messages": []
+            }));
+            let tool = &p.tools[0];
+            assert_openai_function_shape(tool, type_str);
+            assert_eq!(
+                tool["function"]["name"], default_name,
+                "{type_str}: the family default name wins when the offer names nothing"
+            );
+            let desc = tool["function"]["description"]
+                .as_str()
+                .expect("description");
+            assert!(
+                !desc.is_empty(),
+                "{type_str}: catalog description present: {desc}"
+            );
+            let props = tool["function"]["parameters"]["properties"]
+                .as_object()
+                .expect("properties");
+            assert!(props.contains_key(prop), "{type_str}");
+            // The generated schema is picked over the empty-object fallback.
+            assert!(
+                props.len() > 1,
+                "{type_str}: generated family schema, not the empty fallback"
+            );
+        }
+    }
+
+    #[test]
+    fn green_text_editor_undo_edit_only_for_legacy_types() {
+        for (type_str, legacy) in [
+            ("text_editor_20241022", true),
+            ("text_editor_20250124", true),
+            ("text_editor_20250728", false),
+        ] {
+            let p = conv(&json!({
+                "model": "m",
+                "tools": [{ "type": type_str }],
+                "messages": []
+            }));
+            let commands = p.tools[0]["function"]["parameters"]["properties"]["command"]["enum"]
+                .as_array()
+                .expect("command enum");
+            assert_eq!(
+                commands.iter().any(|c| c == "undo_edit"),
+                legacy,
+                "{type_str}"
+            );
+        }
+    }
+
+    #[test]
+    fn green_computer_zoom_only_for_20251124() {
+        for (type_str, zoom) in [
+            ("computer_use_20250124", false),
+            ("computer_use_20251124", true),
+        ] {
+            let p = conv(&json!({
+                "model": "m",
+                "tools": [{ "type": type_str }],
+                "messages": []
+            }));
+            let actions = p.tools[0]["function"]["parameters"]["properties"]["action"]["enum"]
+                .as_array()
+                .expect("action enum");
+            assert_eq!(actions.iter().any(|a| a == "zoom"), zoom, "{type_str}");
+        }
+    }
+
+    #[test]
+    fn green_explicit_input_schema_and_description_win() {
+        let p = conv(&json!({
+            "model": "m",
+            "tools": [{
+                "type": "bash_20250124",
+                "name": "my_bash",
+                "description": "house flavor",
+                "input_schema": { "type": "object", "properties": { "cmd": { "type": "string" } } }
+            }],
+            "messages": []
+        }));
+        let tool = &p.tools[0];
+        assert_eq!(tool["function"]["name"], "my_bash", "explicit name wins");
+        assert_eq!(
+            tool["function"]["description"], "house flavor",
+            "explicit description wins"
+        );
+        let props = tool["function"]["parameters"]["properties"]
+            .as_object()
+            .expect("props");
+        assert_eq!(
+            props.len(),
+            1,
+            "explicit input_schema wins over the generated one"
+        );
+        assert!(props.contains_key("cmd"));
+    }
+
+    #[test]
+    fn green_caller_direct_echoed_for_client_tools() {
+        let completion = json!({
+            "id": "chatcmpl-c",
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "function": { "name": "bash", "arguments": "{\"command\":\"ls\"}" }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        });
+        let meta = conv(&json!({
+            "model": "m",
+            "tools": [{ "type": "bash_20250124", "name": "bash" }],
+            "messages": []
+        }));
+        let m = chat_to_message(&completion, "client-model", &meta.tool_meta);
+        assert_eq!(
+            m["content"],
+            json!([{
+                "type": "tool_use",
+                "id": "call_1",
+                "name": "bash",
+                "input": { "command": "ls" },
+                "caller": { "type": "direct" }
+            }]),
+            "a client-offered tool echoes the direct caller"
+        );
+        assert_eq!(m["stop_reason"], "tool_use");
+    }
+
+    #[test]
+    fn green_caller_absent_without_client_tools() {
+        let completion = json!({
+            "id": "chatcmpl-c2",
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "id": "call_2",
+                        "function": { "name": "bash", "arguments": "{}" }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        });
+        // No tool offers at all: nothing names the call as caller-executed.
+        let m = chat_to_message(&completion, "client-model", &[]);
+        assert!(
+            m["content"][0].get("caller").is_none(),
+            "no client offer, no caller echo: {m}"
+        );
+        // A web_search offer is reserved for in-gateway execution: no echo.
+        let web = conv(&json!({
+            "model": "m",
+            "tools": [{ "type": "web_search_20250305", "name": "bash" }],
+            "messages": []
+        }));
+        let m = chat_to_message(&completion, "client-model", &web.tool_meta);
+        assert!(
+            m["content"][0].get("caller").is_none(),
+            "web family offers never echo caller: {m}"
+        );
+    }
+
+    #[test]
+    fn green_tool_use_tool_calls_round_trip_is_identity() {
+        // Anthropic tool_use -> OpenAI tool_calls -> Anthropic tool_use.
+        let anthropic = json!({
+            "type": "tool_use",
+            "id": "toolu_abc",
+            "name": "bash",
+            "input": { "command": "ls -la", "restart": false }
+        });
+        let meta = vec![ToolMeta {
+            name: "bash".into(),
+            family: ToolFamily::Bash,
+        }];
+        let mut ids = IdState::new();
+        let call = tool_use_to_call(&anthropic, &mut ids);
+        assert_eq!(call["id"], "toolu_abc");
+        assert_eq!(call["function"]["name"], "bash");
+        assert_eq!(
+            call["function"]["arguments"], r#"{"command":"ls -la","restart":false}"#,
+            "arguments is the JSON-string input object"
+        );
+        let completion = json!({
+            "id": "chatcmpl-rt",
+            "choices": [{
+                "message": { "tool_calls": [call] },
+                "finish_reason": "tool_calls"
+            }]
+        });
+        let m = chat_to_message(&completion, "client-model", &meta);
+        assert_eq!(
+            m["content"],
+            json!([{
+                "type": "tool_use",
+                "id": "toolu_abc",
+                "name": "bash",
+                "input": { "command": "ls -la", "restart": false },
+                "caller": { "type": "direct" }
+            }]),
+            "the round-trip reproduces the tool_use block (plus the caller echo)"
+        );
+    }
+
+    #[test]
+    fn red_computer_programmatic_callers_rejected() {
+        let r = to_chat_payload(&json!({
+            "model": "m",
+            "tools": [{
+                "type": "computer_use_20250124",
+                "name": "computer",
+                "allowed_callers": ["programmatic"]
+            }],
+            "messages": []
+        }));
+        assert!(
+            matches!(
+                r,
+                Err(BridgeError {
+                    code: "server_tools_unsupported",
+                    ..
+                })
+            ),
+            "{r:?}"
+        );
     }
 }
