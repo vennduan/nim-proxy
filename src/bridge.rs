@@ -10,10 +10,8 @@
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-// T5 ships the translator ahead of T6's proxy.rs wiring; nothing in the
-// non-test build consumes the module yet, so its items are dead there.
-#[cfg_attr(not(test), allow(dead_code))]
 mod sse;
+pub use sse::{StreamMeta, StreamTranslator};
 
 /// Request-side rejection / validation error.
 #[derive(Clone, Debug, PartialEq, Eq)]

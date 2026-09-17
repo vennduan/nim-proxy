@@ -3768,6 +3768,313 @@ async fn messages_bridge_thinking_block_from_reasoning_content() {
     assert_eq!(mock.state.hit_count(), 2, "the 400 stays off the pipeline");
 }
 
+/// T6: a `stream: true` bridge request rides the pacing loop; control
+/// frames land before the stream commits (retained byte-exact for the
+/// replay contract), the client then gets the translated Anthropic event
+/// sequence — and the chat stream path stays OpenAI bytes byte-exact.
+#[tokio::test]
+async fn messages_bridge_stream_translates_upstream_chunks_to_anthropic_events() {
+    let mock = start_mock().await;
+    let proxy = start_proxy(&mock.url, &[]).await;
+
+    // One immediate 429 before the first event: the retry control frame
+    // (`: retrying`) must reach the client *pre-commit*, byte-exact.
+    mock.state.push(support::Behavior::RateLimited(0));
+
+    let resp = client()
+        .post(proxy.url("/v1/messages"))
+        .json(&serde_json::json!({
+            "model": "mock/model-a",
+            "max_tokens": 64,
+            "stream": true,
+            "messages": [{"role": "user", "content": "stream me"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "bridge stream is a 200 event stream");
+    assert_eq!(
+        resp.headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("text/event-stream")
+    );
+    let body = read_sse(resp).await;
+
+    // Pre-commit frames are proxy control comments only (the mock answers a
+    // 200 on attempt two, so `: connected` and `: retrying` precede the
+    // commit) — never an Anthropic event, and no heartbeat follows
+    // commitment.
+    let commit = body
+        .find("event: message_start")
+        .expect("stream commits to an Anthropic event");
+    let prefix = &body[..commit];
+    for line in prefix.split('\n') {
+        let trimmed = line.trim_end_matches('\r');
+        assert!(
+            trimmed.is_empty() || trimmed.starts_with(':'),
+            "only control comments may precede commitment: {body}"
+        );
+        assert!(
+            !trimmed.contains("event:"),
+            "no Anthropic events pre-commit: {body}"
+        );
+    }
+    let after_commit = &body[commit..];
+    assert!(
+        !after_commit.contains("heartbeat"),
+        "heartbeats never follow commitment: {body}"
+    );
+    assert!(
+        !after_commit.contains(": retrying"),
+        "dropped control frames never leak post-commit: {body}"
+    );
+
+    // The translated event order, end to end.
+    let order = [
+        "event: message_start",
+        "event: content_block_start",
+        "\"type\":\"text_delta\"",
+        "event: content_block_stop",
+        "event: message_delta",
+        "event: message_stop",
+    ];
+    let mut last = 0;
+    for marker in order {
+        let pos = after_commit
+            .find(marker)
+            .unwrap_or_else(|| panic!("missing {marker}: {body}"));
+        assert!(pos >= last, "{marker} out of order: {body}");
+        last = pos + marker.len();
+    }
+
+    assert!(
+        after_commit.contains(r#""model":"mock/model-a""#),
+        "the request model echoes into message_start: {body}"
+    );
+    let delta = after_commit
+        .rfind(r#""text":" world""#)
+        .expect("the second text delta lands");
+    assert!(
+        after_commit[delta..].contains(r#""stop_reason":"end_turn""#),
+        "stop maps to end_turn: {body}"
+    );
+    assert!(
+        after_commit[delta..].contains(r#""input_tokens":11"#)
+            && after_commit[delta..].contains(r#""output_tokens":2"#),
+        "observed usage rides message_delta: {body}"
+    );
+
+    // The chat stream path is untouched by T6: OpenAI bytes byte-exact.
+    let chat = read_sse(
+        client()
+            .post(proxy.url("/v1/chat/completions"))
+            .json(&chat_body("plain", true))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        chat.contains("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}\n\n"),
+        "chat stream stays OpenAI-wire: {chat}"
+    );
+    assert!(
+        !chat.contains("event: message_start"),
+        "the chat path never sees Anthropic events: {chat}"
+    );
+}
+
+/// T6: `tool_calls` deltas render as `tool_use` blocks with
+/// `input_json_delta` fragments; the caller echo lands on the offered tool;
+/// `finish_reason: tool_calls` maps to `stop_reason: tool_use`.
+#[tokio::test]
+async fn messages_bridge_stream_tool_calls_render_as_tool_use_blocks() {
+    let mock = start_mock().await;
+    let proxy = start_proxy(&mock.url, &[]).await;
+
+    let resp = client()
+        .post(proxy.url("/v1/messages"))
+        .json(&serde_json::json!({
+            "model": "mock/model-a",
+            "max_tokens": 64,
+            "stream": true,
+            "tools": [{"type": "bash_20250124", "name": "get_weather"}],
+            "messages": [{"role": "user", "content": "weather?"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "bridge tool stream is a 200");
+    let body = read_sse(resp).await;
+
+    let commit = body
+        .find("event: message_start")
+        .expect("stream commits: {body}");
+    let start = &body[commit..];
+    let block_start = start
+        .find("event: content_block_start")
+        .expect("a content block opens: {body}");
+    let block = &start[block_start..];
+    assert!(
+        block.contains(r#""type":"tool_use""#)
+            && block.contains(r#""name":"get_weather""#)
+            && block.contains(r#""id":"toolu_stream_0""#),
+        "the tool_use block carries the upstream name: {body}"
+    );
+    assert!(
+        block.contains(r#""caller":{"type":"direct"}"#),
+        "the offered client tool echoes its direct caller: {body}"
+    );
+    assert!(
+        start.contains(r#""type":"input_json_delta""#),
+        "tool argument fragments stream as input_json_delta: {body}"
+    );
+    assert!(
+        start.contains(r#""partial_json":"{\"city\"""#),
+        "the first argument fragment lands: {body}"
+    );
+    assert!(
+        start.contains(r#""partial_json":":\"Paris\"""#),
+        "the second argument fragment lands: {body}"
+    );
+    assert!(
+        start.contains(r#""stop_reason":"tool_use""#),
+        "finish_reason tool_calls maps to stop_reason tool_use: {body}"
+    );
+    assert!(
+        start.contains("event: message_stop"),
+        "the translated stream terminates: {body}"
+    );
+}
+
+/// T6: when the upstream breaks mid-response after `message_start`, the
+/// error surfaces as an in-stream Anthropic `error` event — never a raw
+/// OpenAI proxy envelope.
+#[tokio::test]
+async fn messages_bridge_stream_mid_stream_upstream_error_is_in_stream_event() {
+    let mock = start_mock().await;
+    let proxy = start_proxy(&mock.url, &[]).await;
+    mock.state.push(support::Behavior::StreamBreak);
+
+    let resp = client()
+        .post(proxy.url("/v1/messages"))
+        .json(&serde_json::json!({
+            "model": "mock/model-a",
+            "max_tokens": 64,
+            "stream": true,
+            "messages": [{"role": "user", "content": "break me"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "the stream is open when it breaks");
+    let body = read_sse(resp).await;
+
+    let commit = body
+        .find("event: message_start")
+        .unwrap_or_else(|| panic!("the stream committed: {body}"));
+    let after = &body[commit..];
+    let err = after
+        .find("event: error")
+        .unwrap_or_else(|| panic!("the mid-stream error is an Anthropic error event: {body}"));
+    assert!(
+        after[err..].contains(r#""type":"upstream_error""#)
+            && after[err..].contains(r#""code":"upstream_unavailable""#),
+        "the error event carries the upstream code: {body}"
+    );
+    assert!(
+        !after[err..].contains("proxy_error"),
+        "no raw OpenAI proxy envelope after commitment: {body}"
+    );
+    assert!(
+        !after[err..].contains("event: message_stop"),
+        "an in-stream error is terminal: no message_stop follows: {body}"
+    );
+}
+
+/// T6: a stream that never commits to an Anthropic event replays the
+/// upstream bytes untouched — the pre-T5 passthrough contract.
+#[tokio::test]
+async fn messages_bridge_uncommitted_stream_replays_upstream_bytes() {
+    let mock = start_mock().await;
+    let proxy = start_proxy(&mock.url, &[]).await;
+    // A fixed upstream SSE body whose only event is an empty `choices`
+    // chunk: the translator never commits to an Anthropic event, so the
+    // stream terminates uncommitted and `finish()` replays the retained
+    // bytes byte-exact.
+    mock.state.push(support::Behavior::ExactResponse {
+        content_type: "text/event-stream".to_owned(),
+        body: "data: {\"choices\":[]}\n\n".to_owned(),
+    });
+
+    let resp = client()
+        .post(proxy.url("/v1/messages"))
+        .json(&serde_json::json!({
+            "model": "mock/model-a",
+            "max_tokens": 64,
+            "stream": true,
+            "messages": [{"role": "user", "content": "hang me"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    let body = read_sse(resp).await;
+
+    assert!(
+        !body.contains("event: message_start"),
+        "an empty-choices chunk never commits: {body}"
+    );
+    assert!(
+        body.contains(": connected\n\n"),
+        "the pre-commit control frame replays untouched: {body}"
+    );
+    assert!(
+        body.contains("data: {\"choices\":[]}\n\n"),
+        "the uncommitted stream replays upstream bytes byte-exact: {body}"
+    );
+}
+
+/// T6: stall / deadline / broken-stream error frames all route through the
+/// translator; before commitment the OpenAI proxy envelope is emitted.
+#[tokio::test]
+async fn messages_bridge_stall_before_commit_is_openai_envelope() {
+    let mock = start_mock().await;
+    let proxy = start_proxy_with(
+        &mock.url,
+        support::StoreOpts {
+            stream_idle_secs: 1,
+            ..Default::default()
+        },
+        &[],
+    )
+    .await;
+
+    // Hang is uncommitted (no data events), so a stall surfaces in the
+    // OpenAI envelope — not the Anthropic in-stream error.
+    mock.state.push(support::Behavior::Hang);
+    let resp = client()
+        .post(proxy.url("/v1/messages"))
+        .json(&serde_json::json!({
+            "model": "model-a",
+            "max_tokens": 64,
+            "stream": true,
+            "messages": [{"role": "user", "content": "stall me"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    let body = read_sse(resp).await;
+    assert!(
+        body.contains("\"proxy_error\""),
+        "an uncommitted stall stays on the OpenAI envelope: {body}"
+    );
+    assert!(
+        body.contains("upstream_unavailable") || body.contains("stalled"),
+        "the stall reason lands: {body}"
+    );
+}
+
 // ---------- correctness & security hardening (PR 6a) ----------
 
 /// A malformed percent-escape with a multibyte char (`%€`) in the login body

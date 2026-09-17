@@ -33,8 +33,8 @@ use utoipa::openapi::response::ResponseBuilder;
 use utoipa::openapi::schema::{Object, ObjectBuilder, OneOfBuilder, Schema, ToArray};
 use utoipa::openapi::security::{ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::openapi::{
-    Content, ContentBuilder, HttpMethod, PathItem, RefOr, Required, ResponsesBuilder,
-    SecurityRequirement, Tag, Type,
+    Content, HttpMethod, PathItem, RefOr, Required, ResponsesBuilder, SecurityRequirement, Tag,
+    Type,
 };
 use utoipa::{Modify, OpenApi, PartialSchema, ToSchema};
 
@@ -810,8 +810,9 @@ fn message_error_schema() -> Object {
 
 /// `POST /v1/messages` — Anthropic request in, message out (or the
 /// Anthropic-shaped error). A `stream: true` request returns the upstream
-/// OpenAI SSE until the M2 translator ships, so the one operation
-/// documents both `200` content types.
+/// `stream: true` returns the raw upstream OpenAI SSE until the first
+/// event commits, then the translated Anthropic event stream (T5/T6).
+/// The one operation documents both `200` content types.
 fn messages_bridge_operation() -> utoipa::openapi::path::Operation {
     let error = message_error_schema();
     utoipa::openapi::path::OperationBuilder::new()
@@ -823,11 +824,12 @@ fn messages_bridge_operation() -> utoipa::openapi::path::Operation {
         .description(Some(
             "Converts the request to the OpenAI chat dialect, paces it through \
              the shared key pool with the `/v1` surface, and converts the \
-             response back. A `stream: true` request returns the upstream \
-             OpenAI SSE until the M2 translator ships — both content types are \
-             documented on this operation. A non-2xx upstream status is \
-             re-shape-mapped into the Anthropic error envelope, keeping the \
-             upstream's status code.",
+             response back. A `stream: true` request relays the raw upstream \
+             OpenAI bytes until the stream commits to an Anthropic event, \
+             then streams the translated Anthropic events — both content \
+             types are documented on this operation. A non-2xx upstream \
+             status is re-shape-mapped into the Anthropic error envelope, \
+             keeping the upstream's status code.",
         ))
         .request_body(Some(
             RequestBodyBuilder::new()
@@ -845,16 +847,22 @@ fn messages_bridge_operation() -> utoipa::openapi::path::Operation {
                     "200",
                     ResponseBuilder::new()
                         .description(
-                            "An Anthropic message. A `stream: true` request returns \
-                             the upstream OpenAI SSE stream until the M2 translator \
-                             ships; both content types are documented on this \
-                             operation.",
+                            "An Anthropic message. A `stream: true` request streams \
+                             the translated Anthropic events (`message_start`, \
+                             content-block events, `message_delta`, `message_stop`) \
+                             once committed; until the first event the raw \
+                             upstream bytes pass through.",
                         )
                         .content(
                             "application/json",
                             Content::new(Some(message_response_schema())),
                         )
-                        .content("text/event-stream", ContentBuilder::new().build())
+                        .content(
+                            "text/event-stream",
+                            Content::new(Some(utoipa::openapi::Ref::from_schema_name(
+                                "anthropicSSEStream",
+                            ))),
+                        )
                         .build(),
                 )
                 .response(
@@ -928,6 +936,27 @@ fn add_messages_bridge(spec: &mut utoipa::openapi::OpenApi) {
         .as_mut()
         .expect("components exist: every path declares a response schema")
         .add_security_scheme("client_key", client_key_scheme());
+    spec.components
+        .as_mut()
+        .expect("components exist")
+        .schemas
+        .insert(
+            "anthropicSSEStream".to_owned(),
+            Schema::from(
+                ObjectBuilder::new()
+                    .schema_type(Type::String)
+                    .description(Some(
+                        "`text/event-stream` body of a `stream: true` request. Raw \
+                     upstream OpenAI bytes until the first event commits, then \
+                     translated Anthropic SSE events: `message_start`, per-block \
+                     `content_block_start`/`content_block_delta`/`content_block_stop`, \
+                     `message_delta` (stop reason + usage), and `message_stop` — \
+                     or an in-stream `error` event when the upstream fails mid-stream.",
+                    ))
+                    .build(),
+            )
+            .into(),
+        );
 
     let tags = spec.tags.get_or_insert_with(Vec::new);
     if !tags.iter().any(|tag| tag.name == "messages") {

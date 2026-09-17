@@ -1021,7 +1021,7 @@
           "messages"
         ],
         "summary": "Create an Anthropic message through the pacing pipeline",
-        "description": "Converts the request to the OpenAI chat dialect, paces it through the shared key pool with the `/v1` surface, and converts the response back. A `stream: true` request returns the upstream OpenAI SSE until the M2 translator ships — both content types are documented on this operation. A non-2xx upstream status is re-shape-mapped into the Anthropic error envelope, keeping the upstream's status code.",
+        "description": "Converts the request to the OpenAI chat dialect, paces it through the shared key pool with the `/v1` surface, and converts the response back. A `stream: true` request relays the raw upstream OpenAI bytes until the stream commits to an Anthropic event, then streams the translated Anthropic events — both content types are documented on this operation. A non-2xx upstream status is re-shape-mapped into the Anthropic error envelope, keeping the upstream's status code.",
         "operationId": "createAnthropicMessage",
         "requestBody": {
           "description": "Anthropic Messages request body",
@@ -1150,7 +1150,7 @@
         },
         "responses": {
           "200": {
-            "description": "An Anthropic message. A `stream: true` request returns the upstream OpenAI SSE stream until the M2 translator ships; both content types are documented on this operation.",
+            "description": "An Anthropic message. A `stream: true` request streams the translated Anthropic events (`message_start`, content-block events, `message_delta`, `message_stop`) once committed; until the first event the raw upstream bytes pass through.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1308,7 +1308,11 @@
                   }
                 }
               },
-              "text/event-stream": {}
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/anthropicSSEStream"
+                }
+              }
             }
           },
           "400": {
@@ -3020,6 +3024,10 @@
             "type": "boolean"
           }
         }
+      },
+      "anthropicSSEStream": {
+        "type": "string",
+        "description": "`text/event-stream` body of a `stream: true` request. Raw upstream OpenAI bytes until the first event commits, then translated Anthropic SSE events: `message_start`, per-block `content_block_start`/`content_block_delta`/`content_block_stop`, `message_delta` (stop reason + usage), and `message_stop` — or an in-stream `error` event when the upstream fails mid-stream."
       }
     },
     "securitySchemes": {
