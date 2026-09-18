@@ -293,6 +293,24 @@ function renderServer() {
       </div>
       <div class="serr" id="gov-err"></div>
     </div>
+    <div class="card mb">
+      <h2><span data-i18n="settings.server.search.heading"></span> <button class="pbtn" id="save-search" data-style="margin-left:auto" data-i18n="settings.common.save"></button></h2>
+      <p class="shint" data-i18n="settings.server.search.help"></p>
+      <div class="limgrid">
+        <div data-style="grid-column:1/-1"><label class="slabel" for="sv-search-base" data-i18n="settings.server.search.base_url"></label>
+          <input id="sv-search-base" class="sin" data-style="width:100%" value="${escapeHtml(sv.web_search.base_url)}" data-i18n-attr="aria-label:settings.server.search.base_url" spellcheck="false"></div>
+        <div><label class="slabel" for="sv-search-format" data-i18n="settings.server.search.format"></label>
+          <select id="sv-search-format" class="sin" data-style="width:100%">
+            <option value="rss"${sv.web_search.format === 'rss' ? ' selected' : ''}><span data-i18n="settings.server.search.format_rss">rss</span></option>
+            <option value="json"${sv.web_search.format === 'json' ? ' selected' : ''}><span data-i18n="settings.server.search.format_json">json</span></option>
+          </select></div>
+        <div><label class="slabel" for="sv-search-max" data-i18n="settings.server.search.max_results"></label>
+          <span class="rpmwrap" data-style="display:flex"><input id="sv-search-max" class="sin" data-style="width:100%;text-align:right" type="number" min="1" max="50" value="${+sv.web_search.max_results}"></span></div>
+        <div><label class="slabel" for="sv-search-timeout" data-i18n="settings.server.search.timeout"></label>
+          <span class="rpmwrap" data-style="display:flex"><input id="sv-search-timeout" class="sin" data-style="width:100%;text-align:right" type="number" min="1" max="300" value="${+sv.web_search.timeout_secs}"><span class="unitl" data-i18n="settings.server.unit.seconds"></span></span></div>
+      </div>
+      <div class="serr" id="search-err"></div>
+    </div>
     <div class="card">
       <h2><span data-i18n="settings.server.history.heading"></span> <button class="pbtn" id="save-history" data-style="margin-left:auto" data-i18n="settings.common.save"></button></h2>
       <div class="limgrid" data-style="margin-top:6px">
@@ -336,6 +354,26 @@ function renderServer() {
       if (await loadSettings(true)) noteMessage('limits-err', 'settings.validation.saved', {}, true);
     } catch (e) {
       if (await loadSettings()) note('limits-err', e.message);
+    }
+  });
+  $('save-search').addEventListener('click', async () => {
+    const wsv = sv.web_search;
+    const maxResults = Math.round(+$('sv-search-max').value);
+    const timeout = Math.round(+$('sv-search-timeout').value);
+    if (!isFinite(maxResults) || maxResults < 1 || maxResults > 50)
+      return noteMessage('search-err', 'settings.validation.search');
+    if (!isFinite(timeout) || timeout < 1 || timeout > 300)
+      return noteMessage('search-err', 'settings.validation.search');
+    try {
+      await sPost('/api/settings/web-search', {
+        base_url: $('sv-search-base').value.trim(),
+        format: $('sv-search-format').value,
+        max_results: maxResults,
+        timeout_secs: timeout,
+      });
+      if (await loadSettings(true)) noteMessage('search-err', 'settings.validation.saved', {}, true);
+    } catch (e) {
+      if (await loadSettings()) note('search-err', e.message);
     }
   });
   $('gov-tog').addEventListener('click', async () => {

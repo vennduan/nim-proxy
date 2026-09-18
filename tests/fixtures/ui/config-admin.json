@@ -65,6 +65,12 @@
       "request_timeout_secs": 300,
       "stream_idle_secs": 300,
       "strict_passthrough": false
+    },
+    "web_search": {
+      "base_url": "https://www.bing.com/search",
+      "format": "rss",
+      "max_results": 5,
+      "timeout_secs": 30
     }
   },
   "username": "fixture-admin",

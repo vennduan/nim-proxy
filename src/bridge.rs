@@ -10,6 +10,7 @@
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+pub mod search;
 mod sse;
 pub use sse::{StreamMeta, StreamTranslator};
 
@@ -88,6 +89,11 @@ pub struct ChatPayload {
     #[allow(dead_code)]
     /// The validated thinking mode for the response transform.
     pub thinking: ThinkingMeta,
+    /// Execution metadata for the offered `web_search` server tool (T10):
+    /// `None` when the request offers no web_search. Drives the
+    /// in-gateway execute-then-resend loop and the `server_tool_use`
+    /// response transform.
+    pub web_search: Option<search::WebSearchMeta>,
 }
 
 /// Id state for one request: synthesized tool-use ids and the lockstep
@@ -492,8 +498,24 @@ fn client_tool_parameters(family: ToolFamily, tool_type: Option<&str>) -> Option
         ToolFamily::TextEditor => Some(text_editor_tool_schema(tool_type)),
         ToolFamily::Memory => Some(memory_tool_schema()),
         ToolFamily::Computer => Some(computer_tool_schema(tool_type)),
+        // The server-executed family: the model is told it runs in-gateway,
+        // with the one documented input the executor reads (T10).
+        ToolFamily::WebSearch => Some(web_search_tool_schema()),
         _ => None,
     }
+}
+
+fn web_search_tool_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The web search query to execute."
+            }
+        },
+        "required": ["query"]
+    })
 }
 
 fn reject_server_tool(type_or_name: &str) -> BridgeError {
@@ -859,6 +881,7 @@ pub fn to_chat_payload(body: &Value, beta: &str) -> Result<ChatPayload, BridgeEr
 
     let mut tools: Vec<Value> = vec![];
     let mut tool_meta: Vec<ToolMeta> = vec![];
+    let mut web_search: Option<search::WebSearchMeta> = None;
     for raw in body
         .get("tools")
         .and_then(Value::as_array)
@@ -906,6 +929,24 @@ pub fn to_chat_payload(body: &Value, beta: &str) -> Result<ChatPayload, BridgeEr
             name: name.clone(),
             family,
         });
+        if family == ToolFamily::WebSearch {
+            // The executor's per-request caps: `max_uses` bounds how many
+            // searches this request may run; `user_location` is folded
+            // into the query. Non-conforming values are dropped, never
+            // guessed — the executor then fails the over-cap call with a
+            // typed result block instead of searching.
+            let max_uses = tool
+                .get("max_uses")
+                .and_then(Value::as_u64)
+                .filter(|v| *v > 0 && *v <= u64::from(u32::MAX))
+                .map(|v| v as u32);
+            let user_location = tool.get("user_location").cloned().filter(|v| v.is_object());
+            web_search = Some(search::WebSearchMeta {
+                name: name.clone(),
+                max_uses,
+                user_location,
+            });
+        }
     }
 
     let (tool_choice, forced_tool) = map_tool_choice(body.get("tool_choice"))?;
@@ -970,6 +1011,7 @@ pub fn to_chat_payload(body: &Value, beta: &str) -> Result<ChatPayload, BridgeEr
         tool_choice,
         forced_tool,
         thinking,
+        web_search,
     })
 }
 
@@ -982,6 +1024,19 @@ pub fn to_chat_payload(body: &Value, beta: &str) -> Result<ChatPayload, BridgeEr
 /// `end_turn` (fail-closed: an unknown reason with no tool blocks still
 /// reports a terminal stop).
 pub fn chat_to_message(completion: &Value, req_model: &str, tool_meta: &[ToolMeta]) -> Value {
+    chat_to_message_with_web_search(completion, req_model, tool_meta, None)
+}
+
+/// The response transform with the in-gateway `web_search` executor
+/// enabled (T10): an upstream tool call that names the offered web_search
+/// tool comes back as a `server_tool_use` block (no `caller` echo — the
+/// gateway runs it), not as a `tool_use`.
+pub fn chat_to_message_with_web_search(
+    completion: &Value,
+    req_model: &str,
+    tool_meta: &[ToolMeta],
+    web_search: Option<&search::WebSearchMeta>,
+) -> Value {
     let choices = completion
         .get("choices")
         .and_then(Value::as_array)
@@ -1039,20 +1094,29 @@ pub fn chat_to_message(completion: &Value, req_model: &str, tool_meta: &[ToolMet
                     None => format!("toolu_bridge_call_{i}"),
                 };
                 tool_call_ids.push(id.clone());
+                let is_server_call = matches!(
+                    web_search,
+                    Some(meta) if meta.name == name
+                );
                 let mut block = json!({
-                    "type": "tool_use",
+                    "type": if is_server_call { "server_tool_use" } else { "tool_use" },
                     "id": id,
                     "name": name,
                     "input": input
                 });
-                // This gateway offers no server execution: every tool_use it
-                // emits is run by the caller, so the direct caller is echoed
-                // (nim4cc's `caller: {type: "direct"}`). Web families are
-                // reserved for in-gateway execution (T10) and carry none.
-                let client_offered = tool_meta.iter().any(|m| {
-                    m.name == name
-                        && !matches!(m.family, ToolFamily::WebSearch | ToolFamily::WebFetch)
-                });
+                // This gateway's tool_use blocks are all run by the caller,
+                // so the direct caller is echoed (nim4cc's `caller:
+                // {type: "direct"}`). The one exception is an in-gateway
+                // `web_search` (T10): the call comes back as
+                // `server_tool_use` and the gateway's executor — not the
+                // client — runs it, so it carries no caller. Web-family
+                // offers that the request did not pair with an executor
+                // (no `web_search` metadata) keep the legacy tool_use.
+                let client_offered = !is_server_call
+                    && tool_meta.iter().any(|m| {
+                        m.name == name
+                            && !matches!(m.family, ToolFamily::WebSearch | ToolFamily::WebFetch)
+                    });
                 if client_offered {
                     block["caller"] = json!({ "type": "direct" });
                 }
@@ -1100,6 +1164,150 @@ pub fn chat_to_message(completion: &Value, req_model: &str, tool_meta: &[ToolMet
         "stop_sequence": Value::Null,
         "usage": { "input_tokens": in_tok, "output_tokens": out_tok }
     })
+}
+
+/// True while the executor's loop must continue: the upstream response's
+/// first-choice `tool_calls` still names the offered web_search tool.
+pub fn web_search_pending(completion: &Value, meta: &search::WebSearchMeta) -> bool {
+    completion
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("tool_calls"))
+        .and_then(Value::as_array)
+        .is_some_and(|calls| {
+            calls.iter().any(|call| {
+                call.get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+                    == Some(meta.name.as_str())
+            })
+        })
+}
+
+/// Fold one executor round back into the chat dialect: the assistant turn
+/// (its text + every tool call, client or server) plus a `role: "tool"`
+/// message per executed web_search result. The result's `tool_call_id` is
+/// the `tool_use_id` the executor carried, and its content is the plaintext
+/// payload the model parses (`{"query", "results"}` — the `results` array
+/// with snippets, never the opaque outward block).
+pub fn web_search_round_messages(
+    assistant_content: &[Value],
+    results: &[(Value, Value)],
+) -> Vec<Value> {
+    let mut ids = IdState::new();
+    let mut text: Vec<String> = vec![];
+    let mut thinking: Vec<String> = vec![];
+    let mut calls: Vec<Value> = vec![];
+    for block in assistant_content {
+        match block.get("type").and_then(Value::as_str) {
+            Some("thinking") => {
+                let t = block
+                    .get("thinking")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if !t.is_empty() {
+                    thinking.push(t);
+                }
+            }
+            Some("text") => {
+                let t = block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if !t.is_empty() {
+                    text.push(t);
+                }
+            }
+            Some("tool_use") | Some("server_tool_use") => {
+                calls.push(tool_use_to_call(block, &mut ids));
+            }
+            _ => {}
+        }
+    }
+    let mut merged = String::new();
+    for t in &thinking {
+        // Tagged so the upstream model can tell preserved thinking apart
+        // from its own — same fold as the request transform.
+        let chunk = format!("<thinking>{t}</thinking>");
+        if !merged.is_empty() {
+            merged.push('\n');
+        }
+        merged.push_str(&chunk);
+    }
+    for t in &text {
+        if !merged.is_empty() {
+            merged.push('\n');
+        }
+        merged.push_str(t);
+    }
+    let mut assistant = json!({ "role": "assistant" });
+    if !merged.is_empty() {
+        assistant["content"] = Value::String(merged);
+    }
+    if !calls.is_empty() {
+        assistant["tool_calls"] = json!(calls);
+    }
+    let mut out = vec![assistant];
+    for (outward, model_payload) in results {
+        let id = outward
+            .get("tool_use_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        out.push(json!({
+            "role": "tool",
+            "tool_call_id": id,
+            "content": model_payload.to_string(),
+        }));
+    }
+    out
+}
+
+/// The loop-exhaustion marker: the iteration cap was hit while the model
+/// still wanted web_search, so execution stops and the client sees this
+/// typed error block instead of a silent stop.
+pub fn web_search_cap_block() -> Value {
+    json!({
+        "type": "tool_result",
+        "tool_use_id": "srvtoolu_bridge_cap",
+        "content": [{
+            "type": "tool_result_error",
+            "error_code": "max_iterations_exceeded",
+            "message": "the web_search iteration limit was reached; no further searches were executed"
+        }],
+        "is_error": true,
+    })
+}
+
+/// One round's accumulated usage: the round messages' `input_tokens` and
+/// `output_tokens` summed, plus the executor's provider requests under
+/// `server_tool_use.web_search_requests` (emitted only when > 0 — the
+/// official shape keeps the object absent for search-free rounds).
+pub fn web_search_usage(rounds: &[Value], web_search_requests: u64) -> Value {
+    let mut input = 0u64;
+    let mut output = 0u64;
+    for r in rounds {
+        let usage = r.get("usage").cloned().unwrap_or(Value::Null);
+        input += usage
+            .get("input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        output += usage
+            .get("output_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+    }
+    let mut usage = json!({ "input_tokens": input, "output_tokens": output });
+    if web_search_requests > 0 {
+        usage["server_tool_use"] = json!({ "web_search_requests": web_search_requests });
+    }
+    usage
 }
 
 #[cfg(test)]

@@ -25,6 +25,7 @@ use crate::observation::{
     SseObserver, StreamOutcome,
 };
 use crate::{AppState, Config};
+use serde_json::Value;
 
 /// Per-request metric labels, resolved once up front.
 #[derive(Clone)]
@@ -890,6 +891,28 @@ pub async fn handle_messages(
         );
     }
 
+    if let Some(meta) = &payload.web_search {
+        // In-gateway `web_search` executor (T10): the bounded
+        // execute-then-resend loop. A streaming request with a web_search
+        // offer never reaches this branch — it streams through the
+        // translator above, whose `tool_use` blocks carry no
+        // `caller: "direct"` echo for the server family, documenting that
+        // the gateway runs the search on a follow-up non-streaming call.
+        return web_search_executor(
+            &state,
+            &cfg,
+            &ctx,
+            method,
+            &path_query,
+            &headers,
+            &request_model,
+            &payload,
+            meta,
+            request_deadline,
+        )
+        .await;
+    }
+
     let work = buffered(
         state,
         cfg.clone(),
@@ -987,6 +1010,230 @@ async fn anthropic_finish(
             }))
             .expect("static shape serializes"),
         ),
+    )
+}
+
+/// In-gateway `web_search` executor (T10): the request's `web_search`
+/// server tool is run here — the model's `tool_use` comes back, the
+/// configured provider is called, and the results are folded back into
+/// the conversation as a tool message before the round is re-sent. Bounded
+/// by `WEB_SEARCH_MAX_ITERATIONS`; per-call `max_uses` and the
+/// request's `user_location` ride on the metadata. Every provider failure
+/// surfaces as a `web_search_tool_result` error block, never silent.
+///
+/// Each upstream round is a full pacing-loop exchange (the executor runs
+/// in the request's shadow: the same pool, the same retry, the same
+/// deadline), so the request stays under the governance model end to end.
+/// Only the buffered path executes: a streaming request with a `web_search`
+/// offer streams through the translator, whose `tool_use` blocks carry no
+/// `caller: "direct"` echo for the server family — the gateway documents
+/// that it runs the search, on a follow-up non-streaming call.
+#[allow(clippy::too_many_arguments)]
+async fn web_search_executor(
+    state: &Arc<AppState>,
+    cfg: &Arc<Config>,
+    ctx: &Ctx,
+    method: Method,
+    path_query: &str,
+    headers: &HeaderMap,
+    request_model: &str,
+    payload: &crate::bridge::ChatPayload,
+    meta: &crate::bridge::search::WebSearchMeta,
+    request_deadline: Option<RequestDeadline>,
+) -> Response {
+    const WEB_SEARCH_MAX_ITERATIONS: u32 = 4;
+
+    let mut messages = payload
+        .json
+        .get("messages")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let search_cfg = cfg.web_search.clone();
+    let mut rounds: Vec<Value> = vec![];
+    let mut outward_blocks: Vec<Value> = vec![];
+    let mut last_completion: Option<Value> = None;
+    let mut last_bytes: Option<Bytes> = None;
+    let mut search_requests: u64 = 0;
+    let mut uses: u32 = 0;
+
+    for _round in 0..WEB_SEARCH_MAX_ITERATIONS {
+        let mut chat_json = payload.json.clone();
+        chat_json["messages"] = Value::Array(messages.clone());
+        let body = Bytes::from(serde_json::to_vec(&chat_json).expect("chat payload serializes"));
+        let work = buffered(
+            state.clone(),
+            cfg.clone(),
+            ctx.clone(),
+            method.clone(),
+            path_query.to_owned(),
+            headers.clone(),
+            body,
+            None,
+            wait_deadline(cfg),
+        );
+        let response = match request_deadline {
+            Some(deadline) => match tokio::time::timeout_at(deadline.0.into(), work).await {
+                Ok(response) => response,
+                Err(_) => {
+                    record_deadline(ctx);
+                    return deadline_exceeded();
+                }
+            },
+            None => work.await,
+        };
+
+        let status = response.status();
+        if !status.is_success() {
+            return anthropic_finish(response, ctx, request_model, &payload.tool_meta).await;
+        }
+        let Ok(bytes) = axum::body::to_bytes(response.into_body(), usize::MAX).await else {
+            return bad_gateway();
+        };
+        let Ok(completion) = serde_json::from_slice::<Value>(&bytes) else {
+            // A 2xx body that is not a chat completion: the pipeline settled
+            // the request, so the passthrough contract applies.
+            return json_response(status, bytes);
+        };
+        let message = crate::bridge::chat_to_message_with_web_search(
+            &completion,
+            request_model,
+            &payload.tool_meta,
+            Some(meta),
+        );
+        if crate::bridge::web_search_pending(&completion, meta) {
+            // Execute every web_search call this round named, then fold
+            // the results back in for the next round.
+            let calls = completion
+                .get("choices")
+                .and_then(Value::as_array)
+                .and_then(|c| c.first())
+                .and_then(|c| c.get("message"))
+                .and_then(|m| m.get("tool_calls"))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let mut results: Vec<(Value, Value)> = vec![];
+            for call in &calls {
+                let name = call
+                    .get("function")
+                    .and_then(|f| f.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if name != meta.name {
+                    continue;
+                }
+                let id = call
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|i| !i.is_empty())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| "srvtoolu_bridge_auto".to_owned());
+                let input = call
+                    .get("function")
+                    .and_then(|f| f.get("arguments"))
+                    .and_then(Value::as_str)
+                    .and_then(|raw| serde_json::from_str(raw).ok())
+                    .unwrap_or(Value::Null);
+                let (outward, model_payload, made) = crate::bridge::search::execute(
+                    &state.http,
+                    &search_cfg,
+                    &id,
+                    &input,
+                    meta,
+                    &mut uses,
+                )
+                .await;
+                search_requests += u64::from(made);
+                results.push((outward, model_payload));
+            }
+            let assistant_content = message
+                .get("content")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let round = crate::bridge::web_search_round_messages(&assistant_content, &results);
+            let usage =
+                crate::bridge::web_search_usage(std::slice::from_ref(&message), search_requests);
+            let mut folded = Value::Object(serde_json::Map::new());
+            folded["usage"] = usage;
+            rounds.push(folded);
+            messages.extend(round);
+            outward_blocks.extend(results.iter().map(|(outward, _)| outward.clone()));
+            last_completion = Some(completion);
+            last_bytes = Some(bytes);
+            continue;
+        }
+
+        // Terminal round: no further web_search calls. The `message` built
+        // above is the final one; its usage already covers this round. The
+        // executor's outward result blocks from every executed search ride
+        // the content array, so the client sees what ran.
+        let mut final_message = message;
+        let mut all_rounds = rounds.clone();
+        all_rounds.push(final_message.clone());
+        let usage = crate::bridge::web_search_usage(&all_rounds, search_requests);
+        final_message["usage"] = usage;
+        let mut content = final_message
+            .get("content")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        content.extend(outward_blocks);
+        final_message["content"] = Value::Array(content);
+        record_observations(ctx, &observe_buffered(&bytes));
+        return json_response(
+            status,
+            Bytes::from(serde_json::to_vec(&final_message).expect("Anthropic message serializes")),
+        );
+    }
+
+    // Iteration cap reached while the model still wanted to search: stop,
+    // and surface the typed marker block instead of a silent cut-off.
+    let base = last_completion
+        .as_ref()
+        .map(|c| {
+            crate::bridge::chat_to_message_with_web_search(
+                c,
+                request_model,
+                &payload.tool_meta,
+                Some(meta),
+            )
+        })
+        .unwrap_or_else(|| {
+            let mut m = serde_json::json!({
+                "id": "msg_bridge_cap",
+                "type": "message",
+                "role": "assistant",
+                "model": request_model,
+                "stop_reason": "tool_use",
+                "stop_sequence": Value::Null,
+            });
+            m["content"] = Value::Array(Vec::new());
+            m
+        });
+    let mut final_message = base;
+    let cap_block = crate::bridge::web_search_cap_block();
+    let mut content = final_message
+        .get("content")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    content.push(cap_block);
+    content.extend(outward_blocks);
+    final_message["content"] = Value::Array(content);
+    final_message["stop_reason"] = Value::String("tool_use".to_owned());
+    // Every executed call already folded its usage into `rounds` (the cap
+    // path only exists when all four calls wanted to search again), so no
+    // extra round is added here — the last call must not count twice.
+    let usage = crate::bridge::web_search_usage(&rounds, search_requests);
+    final_message["usage"] = usage;
+    if let Some(bytes) = &last_bytes {
+        record_observations(ctx, &observe_buffered(bytes));
+    }
+    json_response(
+        StatusCode::OK,
+        Bytes::from(serde_json::to_vec(&final_message).expect("Anthropic message serializes")),
     )
 }
 

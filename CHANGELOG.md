@@ -21,6 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The OpenAPI spec gains the `createAnthropicMessage` operation, a `client_key`
   security scheme, and the `messages` tag — additions only; the
   `anthropicSSEStream` operation arrives with the streaming translator.
+- The Messages bridge now executes the `web_search_20250305` server tool
+  in-gateway instead of rejecting the offer: a bounded (4-round)
+  execute-then-resend loop against an operator-configured provider, with
+  accumulated usage under `server_tool_use.web_search_requests`, typed
+  result blocks for every provider failure (`search_unavailable`,
+  `missing_query`, `max_uses_exceeded`, `max_iterations_exceeded`), and
+  `user_location` folded into the query. New config keys
+  `web_search.{base_url, format, max_results, timeout_secs}` in the
+  UI-managed store, managed via `POST /api/settings/web-search`; the
+  default is the keyless Bing RSS endpoint. The provider's `q` parameter
+  carries the query; `encrypted_content` blobs are synthetic (opaque
+  base64 of the plaintext payload the model actually parses).
 
 ### Fixed
 
