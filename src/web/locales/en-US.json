@@ -4,7 +4,6 @@
   "messages": {
     "common.app_name": {
       "en": "NIM Proxy",
-      "desc": "Product name.",
       "hash": "1e2b099a"
     },
     "dashboard.brand.proxy": {
@@ -13,12 +12,10 @@
     },
     "dashboard.capacity.col.429s": {
       "en": "429s",
-      "desc": "Column header. '429' is an HTTP status and must survive verbatim.",
       "hash": "e3aeda21"
     },
     "dashboard.capacity.col.current_rate": {
       "en": "Current rate",
-      "desc": "Column header. The key's instantaneous rate against its configured limit.",
       "hash": "0e80e3ff"
     },
     "dashboard.capacity.empty.no_capacity_data": {
@@ -35,37 +32,30 @@
     },
     "dashboard.capacity.history.no_data.few": {
       "en": "{n} intervals with no capacity data",
-      "desc": "CLDR plural category 'few' of the note about intervals whose configured capacity is unknown. {n} is the count and must stay a placeholder. English distinguishes only 'one' and 'other', so this form repeats the English of 'other' — do not assume the categories are identical in your language.",
       "hash": "fce1bc1e"
     },
     "dashboard.capacity.history.no_data.many": {
       "en": "{n} intervals with no capacity data",
-      "desc": "CLDR plural category 'many' of the note about intervals whose configured capacity is unknown. {n} is the count and must stay a placeholder. English distinguishes only 'one' and 'other', so this form repeats the English of 'other' — do not assume the categories are identical in your language.",
       "hash": "fce1bc1e"
     },
     "dashboard.capacity.history.no_data.one": {
       "en": "{n} interval with no capacity data",
-      "desc": "CLDR plural category 'one' of the note about intervals whose configured capacity is unknown. {n} is the count and must stay a placeholder. This is the singular English uses for exactly 1.",
       "hash": "c0adc7d6"
     },
     "dashboard.capacity.history.no_data.other": {
       "en": "{n} intervals with no capacity data",
-      "desc": "CLDR plural category 'other' of the note about intervals whose configured capacity is unknown. {n} is the count and must stay a placeholder. English uses this form for every count except 1, including 0.",
       "hash": "fce1bc1e"
     },
     "dashboard.capacity.history.no_data.two": {
       "en": "{n} intervals with no capacity data",
-      "desc": "CLDR plural category 'two' of the note about intervals whose configured capacity is unknown. {n} is the count and must stay a placeholder. English distinguishes only 'one' and 'other', so this form repeats the English of 'other' — do not assume the categories are identical in your language.",
       "hash": "fce1bc1e"
     },
     "dashboard.capacity.history.no_data.zero": {
       "en": "{n} intervals with no capacity data",
-      "desc": "CLDR plural category 'zero' of the note about intervals whose configured capacity is unknown. {n} is the count and must stay a placeholder. English distinguishes only 'one' and 'other', so this form repeats the English of 'other' — do not assume the categories are identical in your language.",
       "hash": "fce1bc1e"
     },
     "dashboard.capacity.history.shortfall": {
       "en": "Peak shortfall · rpm",
-      "desc": "Unit label under the Capacity history figure: the largest amount by which demand exceeded the capacity configured at the time. 'rpm' is a unit and must survive verbatim; '·' is a separator.",
       "hash": "037f087b"
     },
     "dashboard.capacity.history.title": {
@@ -74,7 +64,6 @@
     },
     "dashboard.capacity.history.utilization": {
       "en": "avg {avg} · peak {peak} of capacity at the time",
-      "desc": "Footer under the Capacity history figure. {avg} and {peak} are already-formatted percentages. 'at the time' means against the capacity configured then, not today's. Lowercase note, not a heading.",
       "hash": "32d932f7"
     },
     "dashboard.capacity.keyutil.heading": {
@@ -83,42 +72,34 @@
     },
     "dashboard.capacity.note.current_vs_capacity": {
       "en": "current rate vs total capacity",
-      "desc": "Note beside the Saturation heading, explaining what the percentage divides: the pool's current request rate over its total configured capacity. Lowercase note, not a heading.",
       "hash": "61534260"
     },
     "dashboard.capacity.note.enabled_keys.few": {
       "en": "{n} enabled keys",
-      "desc": "CLDR plural category 'few' of the sub-label under the saturation bar. {n} is the count of enabled upstream NIM API keys and must stay a placeholder. English distinguishes only 'one' and 'other', so this form repeats the English of 'other' — do not assume the categories are identical in your language.",
       "hash": "8d762678"
     },
     "dashboard.capacity.note.enabled_keys.many": {
       "en": "{n} enabled keys",
-      "desc": "CLDR plural category 'many' of the sub-label under the saturation bar. {n} is the count of enabled upstream NIM API keys and must stay a placeholder. English distinguishes only 'one' and 'other', so this form repeats the English of 'other' — do not assume the categories are identical in your language.",
       "hash": "8d762678"
     },
     "dashboard.capacity.note.enabled_keys.one": {
       "en": "{n} enabled key",
-      "desc": "CLDR plural category 'one' of the sub-label under the saturation bar. {n} is the count of enabled upstream NIM API keys and must stay a placeholder. This is the singular English uses for exactly 1.",
       "hash": "9aae9534"
     },
     "dashboard.capacity.note.enabled_keys.other": {
       "en": "{n} enabled keys",
-      "desc": "CLDR plural category 'other' of the sub-label under the saturation bar. {n} is the count of enabled upstream NIM API keys and must stay a placeholder. English uses this form for every count except 1, including 0.",
       "hash": "8d762678"
     },
     "dashboard.capacity.note.enabled_keys.two": {
       "en": "{n} enabled keys",
-      "desc": "CLDR plural category 'two' of the sub-label under the saturation bar. {n} is the count of enabled upstream NIM API keys and must stay a placeholder. English distinguishes only 'one' and 'other', so this form repeats the English of 'other' — do not assume the categories are identical in your language.",
       "hash": "8d762678"
     },
     "dashboard.capacity.note.enabled_keys.zero": {
       "en": "{n} enabled keys",
-      "desc": "CLDR plural category 'zero' of the sub-label under the saturation bar. {n} is the count of enabled upstream NIM API keys and must stay a placeholder. English distinguishes only 'one' and 'other', so this form repeats the English of 'other' — do not assume the categories are identical in your language.",
       "hash": "8d762678"
     },
     "dashboard.capacity.note.rpm_available": {
       "en": "rpm available",
-      "desc": "Follows a number in the saturation footer: how much of the pool's per-minute capacity is still unused. 'rpm' is a unit and must survive verbatim; only 'available' is translated.",
       "hash": "f1a43cbe"
     },
     "dashboard.capacity.perkey.heading": {
@@ -187,7 +168,6 @@
     },
     "dashboard.clients.maxtok.note": {
       "en": "avg max_tokens / request",
-      "desc": "max_tokens is an API parameter name and must survive verbatim.",
       "hash": "e188f939"
     },
     "dashboard.clients.sampling.heading": {
@@ -196,7 +176,6 @@
     },
     "dashboard.clients.sampling.note": {
       "en": "avg temperature",
-      "desc": "The model sampling parameter, not a physical temperature.",
       "hash": "6b417a81"
     },
     "dashboard.clients.streammix.heading": {
@@ -237,57 +216,46 @@
     },
     "dashboard.common.col.client": {
       "en": "Client",
-      "desc": "Table column header. The calling agent or tool, not an end user.",
       "hash": "0c77fe09"
     },
     "dashboard.common.col.count": {
       "en": "Count",
-      "desc": "Table column header. Number of requests with this outcome.",
       "hash": "37bac495"
     },
     "dashboard.common.col.key": {
       "en": "Key",
-      "desc": "Table column header. An upstream NIM API key. Not a keyboard key or a map key.",
       "hash": "99a52df3"
     },
     "dashboard.common.col.model": {
       "en": "Model",
-      "desc": "Table column header. The model identifier for the row.",
       "hash": "5e2c614c"
     },
     "dashboard.common.col.reason": {
       "en": "Reason",
-      "desc": "Table column header. Why a request did not return 200.",
       "hash": "f81ab834"
     },
     "dashboard.common.col.requests": {
       "en": "Requests",
-      "desc": "Table column header. Count of requests in the selected time range.",
       "hash": "ada27592"
     },
     "dashboard.common.col.share": {
       "en": "Share",
-      "desc": "Table column header. This row's percentage of the total. Noun, never the verb.",
       "hash": "29887a5f"
     },
     "dashboard.common.col.streaming": {
       "en": "Streaming",
-      "desc": "Share of this client's requests that used streaming responses.",
       "hash": "a951c594"
     },
     "dashboard.common.col.tokens_in": {
       "en": "Tokens in",
-      "desc": "Prompt tokens.",
       "hash": "0aae0f75"
     },
     "dashboard.common.col.tokens_out": {
       "en": "Tokens out",
-      "desc": "Completion tokens generated.",
       "hash": "da9a58f8"
     },
     "dashboard.common.empty.history_unavailable": {
       "en": "History unavailable for selected time range",
-      "desc": "Range status when history exists globally but no usable observation covers the selected interval.",
       "hash": "e2aca469"
     },
     "dashboard.common.empty.no_completed_requests": {
@@ -316,12 +284,10 @@
     },
     "dashboard.common.kpi.success_rate": {
       "en": "Success rate",
-      "desc": "KPI label. Share of requests that returned 200.",
       "hash": "49da60f8"
     },
     "dashboard.common.note.selected_time_range": {
       "en": "selected time range",
-      "desc": "Sub-label under a KPI number: the figure covers the time range currently selected in the topbar, not all history.",
       "hash": "59e32cdb"
     },
     "dashboard.common.note.tokens_out": {
@@ -334,17 +300,14 @@
     },
     "dashboard.common.row.active_now": {
       "en": "Active now",
-      "desc": "Requests in flight at this instant, not a windowed aggregate.",
       "hash": "441658c6"
     },
     "dashboard.common.row.dropped": {
       "en": "Dropped",
-      "desc": "Requests shed under overload.",
       "hash": "739f68fe"
     },
     "dashboard.common.row.error_rate": {
       "en": "Error rate",
-      "desc": "Live-panel label beside Active now and Queued: the share of requests in the selected time range that did not return 2xx. Noun phrase, not an imperative.",
       "hash": "33a22472"
     },
     "dashboard.common.row.failed_logins": {
@@ -373,77 +336,62 @@
     },
     "dashboard.common.status.bad_gateway_502": {
       "en": "Bad gateway (502)",
-      "desc": "Non-success reason. '502' must survive verbatim.",
       "hash": "1c52523b"
     },
     "dashboard.common.status.bad_request_400": {
       "en": "Bad request (400)",
-      "desc": "Non-success reason. '400' must survive verbatim.",
       "hash": "3ce1cfb4"
     },
     "dashboard.common.status.client_disconnected": {
       "en": "Client disconnected",
-      "desc": "Non-success reason: the calling client closed the connection before the response finished.",
       "hash": "61fcc9b2"
     },
     "dashboard.common.status.client_error_4xx": {
       "en": "Client error (4xx)",
-      "desc": "Outcome band for 4xx statuses other than 429. '4xx' is an HTTP status class and must survive verbatim.",
       "hash": "c2b42c93"
     },
     "dashboard.common.status.disconnect": {
       "en": "Disconnect",
-      "desc": "Outcome band: the client went away before the response finished. Noun, not the imperative verb.",
       "hash": "acfc5be7"
     },
     "dashboard.common.status.forbidden_403": {
       "en": "Forbidden (403)",
-      "desc": "Non-success reason. '403' must survive verbatim.",
       "hash": "ae88f5b2"
     },
     "dashboard.common.status.not_found_404": {
       "en": "Not found (404)",
-      "desc": "Non-success reason. '404' must survive verbatim.",
       "hash": "8bcbdab7"
     },
     "dashboard.common.status.rate_limited": {
       "en": "Rate limited",
-      "desc": "Outcome band: requests the upstream rejected with 429. Past participle describing the requests.",
       "hash": "a06130a5"
     },
     "dashboard.common.status.rate_limited_429": {
       "en": "Rate limited (429)",
-      "desc": "'429' must survive verbatim.",
       "hash": "2d8d2785"
     },
     "dashboard.common.status.stream_error": {
       "en": "Stream error",
-      "desc": "Non-success reason: the upstream stream failed mid-response.",
       "hash": "38f63d7c"
     },
     "dashboard.common.status.stream_stalled": {
       "en": "Stream stalled",
-      "desc": "Non-success reason: the upstream stopped emitting tokens and the request was abandoned.",
       "hash": "2845f98c"
     },
     "dashboard.common.status.success": {
       "en": "Success",
-      "desc": "Outcome band and stacked-chart series: requests that returned a 2xx status. Noun.",
       "hash": "c88a0b90"
     },
     "dashboard.common.status.timeout_stall": {
       "en": "Timeout / stall",
-      "desc": "Outcome band grouping upstream timeouts (504) with stalled streams. Two nouns joined by a slash.",
       "hash": "efe2e882"
     },
     "dashboard.common.status.unauthorized_401": {
       "en": "Unauthorized (401)",
-      "desc": "'401' must survive verbatim.",
       "hash": "e31a10f2"
     },
     "dashboard.common.status.unavailable_503": {
       "en": "Unavailable (503)",
-      "desc": "Non-success reason. '503' must survive verbatim.",
       "hash": "f544ed2c"
     },
     "dashboard.common.status.upstream_error_cooldowns": {
@@ -452,22 +400,18 @@
     },
     "dashboard.common.status.upstream_timeout_504": {
       "en": "Upstream timeout (504)",
-      "desc": "Non-success reason. '504' must survive verbatim.",
       "hash": "37653bb1"
     },
     "dashboard.common.tag.now": {
       "en": "Now",
-      "desc": "Badge on a card heading: this figure is the live instant, not an aggregate over the selected time range. Adverb of time.",
       "hash": "fe18013d"
     },
     "dashboard.common.tooltip.total": {
       "en": "Total",
-      "desc": "Final row in a stacked-chart tooltip: the sum of all visible series at the selected time.",
       "hash": "c9b3c382"
     },
     "dashboard.common.uptime": {
       "en": "Uptime: {duration}",
-      "desc": "Live proxy uptime. {duration} is an already-formatted localized duration.",
       "hash": "92faa2d9"
     },
     "dashboard.common.value.now": {
@@ -480,7 +424,6 @@
     },
     "dashboard.models.cards.note": {
       "en": "top 4 by tokens out · full list in the table below",
-      "desc": "Note above the leading-model cards. 'top 4' is a count of cards shown.",
       "hash": "dedd5a12"
     },
     "dashboard.models.col.avg_response": {
@@ -489,12 +432,10 @@
     },
     "dashboard.models.col.avg_tps": {
       "en": "Avg tok/s",
-      "desc": "Column header. 'tok/s' is a unit and must survive verbatim.",
       "hash": "cb513f6e"
     },
     "dashboard.models.col.avg_ttft": {
       "en": "Avg TTFT",
-      "desc": "Column header. 'TTFT' is an abbreviation and must survive verbatim.",
       "hash": "1a2a2e30"
     },
     "dashboard.models.col.errors": {
@@ -563,12 +504,10 @@
     },
     "dashboard.models.finish.completed": {
       "en": "Completed",
-      "desc": "Finish reason. The response ended normally.",
       "hash": "22a970d2"
     },
     "dashboard.models.finish.filtered": {
       "en": "Filtered",
-      "desc": "Finish reason. Stopped by the upstream content filter.",
       "hash": "0ba993b3"
     },
     "dashboard.models.finish.function_call": {
@@ -581,7 +520,6 @@
     },
     "dashboard.models.finish.other": {
       "en": "Other",
-      "desc": "Finish reason matched by no known value.",
       "hash": "f97e9da0"
     },
     "dashboard.models.finish.tool_call": {
@@ -726,22 +664,18 @@
     },
     "dashboard.nav.live.disconnected": {
       "en": "Disconnected",
-      "desc": "Live-tail control: the browser lost contact with the proxy.",
       "hash": "04dfac36"
     },
     "dashboard.nav.live.following": {
       "en": "Live",
-      "desc": "Live-tail control: the range follows the present.",
       "hash": "b64ac05f"
     },
     "dashboard.nav.live.frozen": {
       "en": "Absolute",
-      "desc": "Live-tail control: the range is pinned to fixed bounds.",
       "hash": "f288738f"
     },
     "dashboard.nav.live.render_failed": {
       "en": "Render failed",
-      "desc": "Live-tail control: the dashboard could not render a successfully received update, distinct from losing contact with the proxy.",
       "hash": "b704deeb"
     },
     "dashboard.nav.live.tooltip": {
@@ -758,7 +692,6 @@
     },
     "dashboard.nav.tab.models": {
       "en": "Models",
-      "desc": "Navigation tab. Plural noun: the per-LLM-model section.",
       "hash": "d17d2d78"
     },
     "dashboard.nav.tab.overview": {
@@ -807,12 +740,10 @@
     },
     "dashboard.overview.perf.higher_is_better": {
       "en": "higher is better",
-      "desc": "Note beside a throughput distribution: larger numbers are better. Lowercase, sits under the card heading.",
       "hash": "8cde7e09"
     },
     "dashboard.overview.perf.lower_is_better": {
       "en": "lower is better",
-      "desc": "Note beside a latency distribution: smaller numbers are better. Lowercase, sits under the card heading.",
       "hash": "aa8c153c"
     },
     "dashboard.overview.performance.heading": {
@@ -849,7 +780,6 @@
     },
     "dashboard.overview.ring.capacity_used": {
       "en": "Capacity used",
-      "desc": "Ring-gauge label. Share of the key pool's configured requests-per-minute currently in use.",
       "hash": "9448656c"
     },
     "dashboard.overview.ring.errors.few": {
@@ -894,12 +824,10 @@
     },
     "dashboard.reliability.col.first_token": {
       "en": "First token",
-      "desc": "Latency segment: time to the first token. Do not expand to the TTFT acronym.",
       "hash": "2b2cc212"
     },
     "dashboard.reliability.col.generation": {
       "en": "Generation",
-      "desc": "Latency segment: token generation after the first token.",
       "hash": "40536dd8"
     },
     "dashboard.reliability.col.queue_wait": {
@@ -920,12 +848,10 @@
     },
     "dashboard.reliability.hero.budget_used": {
       "en": "{pct} used",
-      "desc": "Right-hand side of the error-budget row: how much of the budget is consumed. {pct} is an already-formatted percentage.",
       "hash": "786461c1"
     },
     "dashboard.reliability.hero.error_budget": {
       "en": "error budget",
-      "desc": "SLO error budget: how much of the allowed unavailability has already been consumed. Lowercase on purpose — it sits inline above the budget bar, not as a heading.",
       "hash": "32064cd1"
     },
     "dashboard.reliability.latency.note": {
@@ -966,7 +892,6 @@
     },
     "dashboard.reliability.pressure.series": {
       "en": "Capacity errors/min",
-      "desc": "Chart series name: upstream worker-capacity errors per minute.",
       "hash": "2fd5ae55"
     },
     "dashboard.reliability.queuewait.heading": {
@@ -983,17 +908,14 @@
     },
     "dashboard.reliability.row.buffered": {
       "en": "Buffered",
-      "desc": "Opposite of streaming: the whole response returned at once.",
       "hash": "8e89b290"
     },
     "dashboard.reliability.row.dropped_503": {
       "en": "Dropped (overload 503)",
-      "desc": "'503' is an HTTP status and must survive verbatim.",
       "hash": "dc219614"
     },
     "dashboard.reliability.row.json_mode": {
       "en": "JSON mode",
-      "desc": "'JSON' must survive verbatim; only 'mode' translates.",
       "hash": "36636e63"
     },
     "dashboard.reliability.row.requests_with_tools": {
@@ -1002,7 +924,6 @@
     },
     "dashboard.reliability.row.tool_choice": {
       "en": "Tool choice",
-      "desc": "The API parameter rendered as a label.",
       "hash": "d3a2c6a3"
     },
     "dashboard.reliability.security.heading": {
@@ -1011,37 +932,30 @@
     },
     "dashboard.reliability.slo.met": {
       "en": "SLO {target} · met",
-      "desc": "Under the availability figure when the target was achieved. 'SLO' is an abbreviation and must survive verbatim; {target} is the target percentage.",
       "hash": "019ba1ae"
     },
     "dashboard.reliability.slo.missed": {
       "en": "SLO {target} · missed",
-      "desc": "Under the availability figure when the target was not achieved. 'SLO' must survive verbatim; {target} is the target percentage.",
       "hash": "80d04652"
     },
     "dashboard.reliability.slo.no_traffic": {
       "en": "SLO {target} · no eligible traffic",
-      "desc": "Under the availability figure when the time range contains no requests the SLO counts. 'SLO' must survive verbatim; {target} is the target percentage.",
       "hash": "a9c9a18c"
     },
     "dashboard.topbar.custom.apply": {
       "en": "Apply",
-      "desc": "Button, imperative verb. Applies the entered range.",
       "hash": "31e392d1"
     },
     "dashboard.topbar.custom.from": {
       "en": "From",
-      "desc": "Accessible name for the start of a custom dashboard time range.",
       "hash": "21819769"
     },
     "dashboard.topbar.custom.to": {
       "en": "to",
-      "desc": "Separator between the from and to datetime inputs. Preposition, not a verb.",
       "hash": "663ea1bf"
     },
     "dashboard.topbar.custom.to_label": {
       "en": "To",
-      "desc": "Accessible name for the end of a custom dashboard time range.",
       "hash": "f4b06ef6"
     },
     "dashboard.topbar.error.load": {
@@ -1058,12 +972,10 @@
     },
     "dashboard.topbar.range.custom": {
       "en": "Custom",
-      "desc": "Toggle button. Opens the from/to picker. Adjective used as a label.",
       "hash": "494ca78f"
     },
     "dashboard.topbar.range.default": {
       "en": "Default · 30d",
-      "desc": "Toggle button. 'Default' is an adjective qualifying the preset time range; 30d is its length.",
       "hash": "4c1bd988"
     },
     "dashboard.topbar.range.default_dynamic": {
@@ -1072,27 +984,22 @@
     },
     "dashboard.topbar.range.p1h": {
       "en": "1h",
-      "desc": "Short duration abbreviation on a time-range pill.",
       "hash": "89481628"
     },
     "dashboard.topbar.range.p24h": {
       "en": "24h",
-      "desc": "Short duration abbreviation on a time-range pill.",
       "hash": "0b509e6d"
     },
     "dashboard.topbar.range.p30d": {
       "en": "30d",
-      "desc": "Short duration abbreviation on a time-range pill.",
       "hash": "e3ba17e3"
     },
     "dashboard.topbar.range.p6h": {
       "en": "6h",
-      "desc": "Short duration abbreviation on a time-range pill.",
       "hash": "13eded38"
     },
     "dashboard.topbar.range.p7d": {
       "en": "7d",
-      "desc": "Short duration abbreviation on a time-range pill.",
       "hash": "a7c74264"
     },
     "dashboard.topbar.scope.absolute": {
@@ -1105,22 +1012,18 @@
     },
     "dashboard.topbar.scope.partial_history": {
       "en": "Partial history · {from}–{to}",
-      "desc": "Range status for incomplete history; variables are the effective observed bounds, not the requested bounds.",
       "hash": "41fcec64"
     },
     "login.document.title": {
       "en": "NIM Proxy — Sign in",
-      "desc": "Browser tab title for the sign-in page.",
       "hash": "991ec816"
     },
     "login.error.invalid_credentials": {
       "en": "Incorrect username or password.",
-      "desc": "Generic authentication failure; never disclose which credential was wrong.",
       "hash": "2420afe3"
     },
     "login.password.placeholder": {
       "en": "Password",
-      "desc": "Password input placeholder.",
       "hash": "e7cf3ef4"
     },
     "login.prompt": {
@@ -1129,12 +1032,10 @@
     },
     "login.submit": {
       "en": "Sign in",
-      "desc": "Submit button, imperative verb phrase.",
       "hash": "bfd402b2"
     },
     "login.username.placeholder": {
       "en": "Username",
-      "desc": "Username input placeholder.",
       "hash": "e3b89e9d"
     },
     "settings.account.confirm_password": {
@@ -1295,7 +1196,6 @@
     },
     "settings.key.rpm": {
       "en": "Requests per minute",
-      "desc": "Accessible name for a NIM API key rate-limit input.",
       "hash": "aa6d477f"
     },
     "settings.key.slot": {
@@ -1340,7 +1240,6 @@
     },
     "settings.mode.help": {
       "en": "Controls /v1 client calls only. In API key required mode, clients use a bearer token. Open (no authentication) allows anyone who can reach /v1. Use only on trusted networks.",
-      "desc": "Full API access-mode explanation. This is deliberately one plain catalog sentence; the former bold literals are not parsed or reassembled at runtime.",
       "hash": "3431dd52"
     },
     "settings.mode.keyed": {
@@ -1401,7 +1300,6 @@
     },
     "settings.server.base_url": {
       "en": "Upstream base URL",
-      "desc": "Accessible name for the configurable upstream base URL.",
       "hash": "a3b55051"
     },
     "settings.server.base_url_note": {
@@ -1414,32 +1312,26 @@
     },
     "settings.server.history.bytes.few": {
       "en": "{bytes} bytes",
-      "desc": "CLDR plural category 'few' for the history data-file size. {bytes} is already locale-formatted; English repeats the other form.",
       "hash": "31800b69"
     },
     "settings.server.history.bytes.many": {
       "en": "{bytes} bytes",
-      "desc": "CLDR plural category 'many' for the history data-file size. {bytes} is already locale-formatted; English repeats the other form.",
       "hash": "31800b69"
     },
     "settings.server.history.bytes.one": {
       "en": "{bytes} byte",
-      "desc": "CLDR plural category 'one' for the history data-file size. {bytes} is already locale-formatted.",
       "hash": "51bd3673"
     },
     "settings.server.history.bytes.other": {
       "en": "{bytes} bytes",
-      "desc": "CLDR plural category 'other' for the history data-file size. {bytes} is already locale-formatted.",
       "hash": "31800b69"
     },
     "settings.server.history.bytes.two": {
       "en": "{bytes} bytes",
-      "desc": "CLDR plural category 'two' for the history data-file size. {bytes} is already locale-formatted; English repeats the other form.",
       "hash": "31800b69"
     },
     "settings.server.history.bytes.zero": {
       "en": "{bytes} bytes",
-      "desc": "CLDR plural category 'zero' for the history data-file size. {bytes} is already locale-formatted; English repeats the other form.",
       "hash": "31800b69"
     },
     "settings.server.history.compaction_pending": {
@@ -1504,7 +1396,6 @@
     },
     "settings.server.model_concurrency": {
       "en": "Model concurrency limit",
-      "desc": "Accessible name for a per-model governor override limit.",
       "hash": "c1032472"
     },
     "settings.server.model_limits": {
@@ -1526,6 +1417,38 @@
     "settings.server.remove_override": {
       "en": "Remove override",
       "hash": "6d43eea1"
+    },
+    "settings.server.search.base_url": {
+      "en": "Provider endpoint",
+      "hash": "ea39c482"
+    },
+    "settings.server.search.format": {
+      "en": "Response format",
+      "hash": "052b8391"
+    },
+    "settings.server.search.format_json": {
+      "en": "json",
+      "hash": "02bd175f"
+    },
+    "settings.server.search.format_rss": {
+      "en": "rss",
+      "hash": "c6cc4283"
+    },
+    "settings.server.search.heading": {
+      "en": "Web search provider",
+      "hash": "04e17fbb"
+    },
+    "settings.server.search.help": {
+      "en": "Runs in-gateway web_search tool calls against this endpoint",
+      "hash": "9771bc59"
+    },
+    "settings.server.search.max_results": {
+      "en": "Max results",
+      "hash": "caa0adc2"
+    },
+    "settings.server.search.timeout": {
+      "en": "Provider timeout",
+      "hash": "1998a1c3"
     },
     "settings.server.strict_note": {
       "en": "Rejects parameters the upstream does not accept.",
@@ -1553,32 +1476,26 @@
     },
     "settings.users.client_key_count.few": {
       "en": "{n} client API keys",
-      "desc": "CLDR plural category 'few' for the user's client API key count. {n} is already locale-formatted; English repeats the other form.",
       "hash": "db3cf8c9"
     },
     "settings.users.client_key_count.many": {
       "en": "{n} client API keys",
-      "desc": "CLDR plural category 'many' for the user's client API key count. {n} is already locale-formatted; English repeats the other form.",
       "hash": "db3cf8c9"
     },
     "settings.users.client_key_count.one": {
       "en": "{n} client API key",
-      "desc": "CLDR plural category 'one' for the user's client API key count. {n} is already locale-formatted.",
       "hash": "591f6a81"
     },
     "settings.users.client_key_count.other": {
       "en": "{n} client API keys",
-      "desc": "CLDR plural category 'other' for the user's client API key count. {n} is already locale-formatted.",
       "hash": "db3cf8c9"
     },
     "settings.users.client_key_count.two": {
       "en": "{n} client API keys",
-      "desc": "CLDR plural category 'two' for the user's client API key count. {n} is already locale-formatted; English repeats the other form.",
       "hash": "db3cf8c9"
     },
     "settings.users.client_key_count.zero": {
       "en": "{n} client API keys",
-      "desc": "CLDR plural category 'zero' for the user's client API key count. {n} is already locale-formatted; English repeats the other form.",
       "hash": "db3cf8c9"
     },
     "settings.users.delete": {
@@ -1591,32 +1508,26 @@
     },
     "settings.users.nim_key_count.few": {
       "en": "{n} NIM API keys",
-      "desc": "CLDR plural category 'few' for the user's NIM API key count. {n} is already locale-formatted; English repeats the other form.",
       "hash": "e964131c"
     },
     "settings.users.nim_key_count.many": {
       "en": "{n} NIM API keys",
-      "desc": "CLDR plural category 'many' for the user's NIM API key count. {n} is already locale-formatted; English repeats the other form.",
       "hash": "e964131c"
     },
     "settings.users.nim_key_count.one": {
       "en": "{n} NIM API key",
-      "desc": "CLDR plural category 'one' for the user's NIM API key count. {n} is already locale-formatted.",
       "hash": "edbe8c52"
     },
     "settings.users.nim_key_count.other": {
       "en": "{n} NIM API keys",
-      "desc": "CLDR plural category 'other' for the user's NIM API key count. {n} is already locale-formatted.",
       "hash": "e964131c"
     },
     "settings.users.nim_key_count.two": {
       "en": "{n} NIM API keys",
-      "desc": "CLDR plural category 'two' for the user's NIM API key count. {n} is already locale-formatted; English repeats the other form.",
       "hash": "e964131c"
     },
     "settings.users.nim_key_count.zero": {
       "en": "{n} NIM API keys",
-      "desc": "CLDR plural category 'zero' for the user's NIM API key count. {n} is already locale-formatted; English repeats the other form.",
       "hash": "e964131c"
     },
     "settings.users.note": {
@@ -1673,32 +1584,26 @@
     },
     "settings.validation.models_added.few": {
       "en": "✓ {n} models found. Adding NIM API key…",
-      "desc": "CLDR plural category 'few' for successful NIM API key validation. {n} is the number of returned models and is already locale-formatted; English repeats the other form.",
       "hash": "8325eafc"
     },
     "settings.validation.models_added.many": {
       "en": "✓ {n} models found. Adding NIM API key…",
-      "desc": "CLDR plural category 'many' for successful NIM API key validation. {n} is the number of returned models and is already locale-formatted; English repeats the other form.",
       "hash": "8325eafc"
     },
     "settings.validation.models_added.one": {
       "en": "✓ {n} model found. Adding NIM API key…",
-      "desc": "CLDR plural category 'one' for successful NIM API key validation. {n} is the number of returned models and is already locale-formatted.",
       "hash": "c1e489e4"
     },
     "settings.validation.models_added.other": {
       "en": "✓ {n} models found. Adding NIM API key…",
-      "desc": "CLDR plural category 'other' for successful NIM API key validation. {n} is the number of returned models and is already locale-formatted.",
       "hash": "8325eafc"
     },
     "settings.validation.models_added.two": {
       "en": "✓ {n} models found. Adding NIM API key…",
-      "desc": "CLDR plural category 'two' for successful NIM API key validation. {n} is the number of returned models and is already locale-formatted; English repeats the other form.",
       "hash": "8325eafc"
     },
     "settings.validation.models_added.zero": {
       "en": "✓ {n} models found. Adding NIM API key…",
-      "desc": "CLDR plural category 'zero' for successful NIM API key validation. {n} is the number of returned models and is already locale-formatted; English repeats the other form.",
       "hash": "8325eafc"
     },
     "settings.validation.new_password": {
@@ -1729,6 +1634,10 @@
       "en": "Saved.",
       "hash": "fca046cc"
     },
+    "settings.validation.search": {
+      "en": "Check the web search values",
+      "hash": "68783a83"
+    },
     "settings.validation.slo": {
       "en": "SLO target must be greater than 0 and at most 100.",
       "hash": "90bf3754"
@@ -1739,7 +1648,6 @@
     },
     "setup.document.title": {
       "en": "NIM Proxy — First-time setup",
-      "desc": "Browser tab title. 'NIM Proxy' is the product name and stays.",
       "hash": "a59b017c"
     },
     "setup.header.subtitle": {
@@ -1748,7 +1656,6 @@
     },
     "setup.header.title": {
       "en": "— First-time setup",
-      "desc": "Follows the untranslated NIM PROXY wordmark.",
       "hash": "f1de6d69"
     },
     "setup.step1.confirm": {
@@ -1757,7 +1664,6 @@
     },
     "setup.step1.error.password_length": {
       "en": "Password must be at least 10 characters.",
-      "desc": "Validation error under the account form. 10 is the enforced minimum length.",
       "hash": "7e65d20b"
     },
     "setup.step1.error.password_mismatch": {
@@ -1766,12 +1672,10 @@
     },
     "setup.step1.error.username_charset": {
       "en": "Username: 1–32 letters, digits, '.', '_' or '-'.",
-      "desc": "Validation error under the account form. The character set and the 1-32 range are enforced by the server and must survive verbatim.",
       "hash": "c437375f"
     },
     "setup.step1.hint": {
       "en": "The superuser account cannot be deleted.",
-      "desc": "The one durable restriction this hint communicates.",
       "hash": "322426e9"
     },
     "setup.step1.password": {
@@ -1784,7 +1688,6 @@
     },
     "setup.step1.username.placeholder": {
       "en": "e.g. admin",
-      "desc": "Input placeholder. 'e.g.' needs the locale's own abbreviation; 'admin' is a suggested value.",
       "hash": "d415d634"
     },
     "setup.step2.addkey": {
@@ -1797,72 +1700,58 @@
     },
     "setup.step2.base_url": {
       "en": "Upstream base URL",
-      "desc": "Accessible name for the optional setup upstream URL input.",
       "hash": "a3b55051"
     },
     "setup.step2.error.key_duplicate": {
       "en": "That key is already added.",
-      "desc": "Validation error: the same NIM key is already in the list.",
       "hash": "984cdd49"
     },
     "setup.step2.error.key_required": {
       "en": "Paste a NIM API key first.",
-      "desc": "Validation error: the key field is empty. 'NIM' is the vendor product name and stays.",
       "hash": "45e7e8a4"
     },
     "setup.step2.error.validation_failed": {
       "en": "Key validation failed: {error}",
-      "desc": "The upstream rejected the key. {error} is the upstream's own error text or an HTTP status code, inserted verbatim and never translated.",
       "hash": "38f22520"
     },
     "setup.step2.error.validation_request": {
       "en": "Validation request failed: {error}",
-      "desc": "The browser could not reach the proxy to validate the key. {error} is the browser's error text, inserted verbatim and never translated.",
       "hash": "9e7beddf"
     },
     "setup.step2.hint": {
       "en": "NIM API keys are shared across clients. The default rate limit is 40 requests/min per key.",
-      "desc": "Explains pool sharing and the default per-key rate limit.",
       "hash": "de52a624"
     },
     "setup.step2.key_label": {
       "en": "NIM API key",
-      "desc": "Accessible name for the setup NIM API key input.",
       "hash": "48470460"
     },
     "setup.step2.key_meta": {
       "en": "{models} models · {rpm} rpm",
-      "desc": "Meta line on an added key: how many models the key reached, then its per-minute limit. 'rpm' is a unit and must survive verbatim.",
       "hash": "026c787c"
     },
     "setup.step2.rpm_label": {
       "en": "Requests per minute",
-      "desc": "Accessible name for the setup NIM API key rate-limit input.",
       "hash": "aa6d477f"
     },
     "setup.step2.validating": {
       "en": "Validating…",
-      "desc": "Button label while a key is probed upstream.",
       "hash": "cd51f8c8"
     },
     "setup.step3.api_access_keyed": {
       "en": "API key required · first client key \"default\"",
-      "desc": "Review line, shown when the wizard will mint a client key. \"default\" is the key's literal name and must survive verbatim, quotes included.",
       "hash": "e77044c2"
     },
     "setup.step3.api_access_open": {
       "en": "API key required · no client keys configured",
-      "desc": "Review line when keyed mode has no client keys.",
       "hash": "df3a52d0"
     },
     "setup.step3.error.failed": {
       "en": "Setup failed ({status})",
-      "desc": "The proxy rejected the setup request. {status} is the HTTP status code, a number inserted verbatim.",
       "hash": "1a1df234"
     },
     "setup.step3.error.request": {
       "en": "Setup request failed: {error}",
-      "desc": "The browser could not reach the proxy to submit setup. {error} is the browser's error text, inserted verbatim and never translated.",
       "hash": "d35faf3c"
     },
     "setup.step3.finish": {
@@ -1871,37 +1760,30 @@
     },
     "setup.step3.mintkey": {
       "en": "Create the first client API key ({key}) for immediate access to {endpoint}",
-      "desc": "Checkbox label. {key} and {endpoint} are fixed machine values.",
       "hash": "fc1a3704"
     },
     "setup.step3.mintwarn": {
       "en": "Without a client API key, {b}all{/b} /v1 requests are rejected. Create one in Settings → Access & keys, or change API authentication to Open (no authentication).",
-      "desc": "{b}...{/b} emphasizes that every /v1 request is rejected until the operator creates a client key or explicitly opens API authentication.",
       "hash": "169155e2"
     },
     "setup.step3.review.api_access": {
       "en": "API access",
-      "desc": "Review-panel row label. Whether the proxy's own /v1 endpoint will require a client API key.",
       "hash": "923fd434"
     },
     "setup.step3.review.keys": {
       "en": "NIM keys",
-      "desc": "Review-panel row label: the upstream NIM API keys added in step 2. 'NIM' is the vendor product name and stays.",
       "hash": "504945ef"
     },
     "setup.step3.review.keys_value": {
       "en": "{count} validated · Total {rpm} rpm",
-      "desc": "Review-panel value for the NIM keys row: how many keys validated, then the pool's combined per-minute limit. 'rpm' is a unit and must survive verbatim.",
       "hash": "1497318d"
     },
     "setup.step3.review.superuser": {
       "en": "Superuser",
-      "desc": "Review-panel row label. The role of the account being created; the proxy persists this same role name.",
       "hash": "593b0a98"
     },
     "setup.step3.review.upstream": {
       "en": "Upstream",
-      "desc": "Review-panel row label. The upstream base URL requests are forwarded to; the value beside it is a URL.",
       "hash": "94adc696"
     },
     "setup.step4.apikey": {
@@ -1914,27 +1796,22 @@
     },
     "setup.step4.copied": {
       "en": "Copied",
-      "desc": "Button label after a successful clipboard copy. Past tense.",
       "hash": "8d525e5f"
     },
     "setup.step4.copy": {
       "en": "Copy",
-      "desc": "Button, imperative verb. Copies the adjacent value to the clipboard.",
       "hash": "e21f935f"
     },
     "setup.step4.intro": {
       "en": "Setup complete. Configure your client with the proxy URL and API key below. The API key is shown {b}only once{/b}; only its digest is stored.",
-      "desc": "{b}...{/b} emphasizes the once-only secret display.",
       "hash": "b9a0cea0"
     },
     "setup.step4.opendash": {
       "en": "Open dashboard",
-      "desc": "Button, imperative verb phrase. 'Open' is the verb, not the API-mode adjective.",
       "hash": "803f2313"
     },
     "setup.step4.select_copy": {
       "en": "Select & copy",
-      "desc": "Button label when the clipboard API is unavailable and the user must copy manually.",
       "hash": "09201dce"
     },
     "setup.stepper.step1": {

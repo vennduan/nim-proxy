@@ -511,6 +511,7 @@ pub async fn api_config(
             dashboard: sc.dashboard.clone(),
             default_locale: sc.default_locale.clone(),
             governor: sc.governor.clone(),
+            web_search: sc.web_search.clone(),
             history: HistorySettings {
                 available_from: history.available_from,
                 compaction_pending: history.compaction_pending,
@@ -988,6 +989,40 @@ admin_section!(
             cand.governor.overrides.remove(&m);
         }
     }
+);
+
+/// The complete `web_search` provider section (the Messages bridge's
+/// in-gateway search, T10). No field is defaulted on the wire: a partial
+/// body is a 422, never a silent reset of an omitted field.
+#[derive(Deserialize, ToSchema)]
+pub struct WebSearchReq {
+    /// The provider endpoint; http(s) only, no link-local hosts.
+    base_url: String,
+    /// The provider wire format.
+    format: crate::config::SearchFormat,
+    /// 1-50.
+    max_results: u8,
+    /// 1-300 seconds.
+    timeout_secs: u64,
+}
+
+fn replace_web_search(cand: &mut StoredConfig, req: WebSearchReq) {
+    cand.web_search = crate::config::WebSearchCfg {
+        base_url: req.base_url,
+        format: req.format,
+        max_results: req.max_results,
+        timeout_secs: req.timeout_secs,
+    };
+}
+
+admin_section!(
+    web_search_cfg,
+    WebSearchReq,
+    "/api/settings/web-search",
+    "`POST /api/settings/web-search` (admin) - the provider endpoint the
+     Messages bridge's in-gateway `web_search` reads (T10). Every field is
+     required.",
+    replace_web_search
 );
 
 /// Exactly one of `add` / `remove` / `reset_password` / `set_role`.

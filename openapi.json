@@ -891,6 +891,77 @@
         }
       }
     },
+    "/api/settings/web-search": {
+      "post": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "`POST /api/settings/web-search` (admin) - the provider endpoint the\n     Messages bridge's in-gateway `web_search` reads (T10). Every field is\n     required.",
+        "operationId": "web_search_cfg",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebSearchReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied, persisted, and swapped into the live runtime config",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OkResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The store validator rejected the result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or the caller's user was deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Server settings require an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is missing or the wrong type — a partial body is never a silent reset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/setup": {
       "post": {
         "tags": [
@@ -2697,6 +2768,14 @@
           }
         }
       },
+      "SearchFormat": {
+        "type": "string",
+        "description": "Whether the `web_search` provider endpoint answers an RSS feed or a JSON\nresults object.",
+        "enum": [
+          "rss",
+          "json"
+        ]
+      },
       "ServerReq": {
         "allOf": [
           {
@@ -2726,7 +2805,8 @@
           "default_locale",
           "governor",
           "history",
-          "limits"
+          "limits",
+          "web_search"
         ],
         "properties": {
           "base_url": {
@@ -2746,6 +2826,10 @@
           },
           "limits": {
             "$ref": "#/components/schemas/Limits"
+          },
+          "web_search": {
+            "$ref": "#/components/schemas/WebSearchCfg",
+            "description": "The `web_search` provider settings (Messages bridge, T10)."
           }
         }
       },
@@ -3022,6 +3106,64 @@
           },
           "ok": {
             "type": "boolean"
+          }
+        }
+      },
+      "WebSearchCfg": {
+        "type": "object",
+        "description": "The `web_search` provider settings the in-gateway Messages bridge reads\nwhen it executes a `web_search` server tool (T10).",
+        "properties": {
+          "base_url": {
+            "type": "string",
+            "description": "The provider endpoint. `http(s)://` only; no link-local hosts (the\nsame guard as the upstream base_url). `q` is appended to the URL."
+          },
+          "format": {
+            "$ref": "#/components/schemas/SearchFormat",
+            "description": "`rss` (default, keyless Bing-style feed) or `json`."
+          },
+          "max_results": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Cap on results per search, 1-50.",
+            "minimum": 0
+          },
+          "timeout_secs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Per-request provider timeout, 1-300 seconds.",
+            "minimum": 0
+          }
+        }
+      },
+      "WebSearchReq": {
+        "type": "object",
+        "description": "The complete `web_search` provider section (the Messages bridge's\nin-gateway search, T10). No field is defaulted on the wire: a partial\nbody is a 422, never a silent reset of an omitted field.",
+        "required": [
+          "base_url",
+          "format",
+          "max_results",
+          "timeout_secs"
+        ],
+        "properties": {
+          "base_url": {
+            "type": "string",
+            "description": "The provider endpoint; http(s) only, no link-local hosts."
+          },
+          "format": {
+            "$ref": "#/components/schemas/SearchFormat",
+            "description": "The provider wire format."
+          },
+          "max_results": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1-50.",
+            "minimum": 0
+          },
+          "timeout_secs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "1-300 seconds.",
+            "minimum": 0
           }
         }
       },

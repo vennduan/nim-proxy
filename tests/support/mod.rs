@@ -53,6 +53,120 @@ pub enum Behavior {
     OddFinish,
     /// A fixed upstream response for an exact proxy-boundary assertion.
     ExactResponse { content_type: String, body: String },
+    /// T10: answer `web_search` with one `tool_calls` round, then — once a
+    /// `role: "tool"` message has been folded back — a final text stop.
+    /// Exercises the executor's execute-then-resend loop.
+    WebSearch,
+    /// T10: answer `web_search` with `tool_calls` on every round, so the
+    /// executor's iteration cap is reached and the typed cap block is
+    /// surfaced.
+    WebSearchAlways,
+}
+
+/// The scriptable web_search provider mock (T10): one GET endpoint that
+/// answers with a JSON `{"results": [...]}` (or an error) per queue entry.
+/// The mock counts its hits so tests can assert the bounded-call contract.
+#[derive(Clone, Debug)]
+pub enum SearchBehavior {
+    /// `{"results": [{title,url,snippet,...} x N]}`; count controls how many.
+    Results { count: usize },
+    /// 500 — the provider is down; the executor must surface a
+    /// `search_unavailable` block, never a panic.
+    Error,
+    /// Stall for this many seconds before answering (provider timeout).
+    Delay(u64),
+}
+
+impl Default for SearchBehavior {
+    fn default() -> Self {
+        Self::Results { count: 3 }
+    }
+}
+
+#[derive(Default)]
+pub struct MockSearchState {
+    pub hits: Mutex<Vec<(String, String)>>,
+    pub script: Mutex<VecDeque<SearchBehavior>>,
+}
+
+impl MockSearchState {
+    pub fn push(&self, b: SearchBehavior) {
+        self.script.lock().unwrap().push_back(b);
+    }
+    pub fn hit_count(&self) -> usize {
+        self.hits.lock().unwrap().len()
+    }
+}
+
+pub struct MockSearch {
+    pub url: String,
+    pub state: Arc<MockSearchState>,
+}
+
+pub async fn start_search_mock() -> MockSearch {
+    let state = Arc::new(MockSearchState::default());
+    let app = Router::new()
+        .route("/", get(search_root))
+        .with_state(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    // The bare host is the base_url: the executor appends `?q=...` itself.
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    MockSearch { url, state }
+}
+
+async fn search_root(
+    State(state): State<Arc<MockSearchState>>,
+    query: axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    mock_search_handler(state, query).await
+}
+
+async fn mock_search_handler(
+    state: Arc<MockSearchState>,
+    query: axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    let q = query.get("q").cloned().unwrap_or_default();
+    state
+        .hits
+        .lock()
+        .unwrap()
+        .push((q.clone(), format!("{query:?}")));
+    let behavior = state
+        .script
+        .lock()
+        .unwrap()
+        .pop_front()
+        .unwrap_or(SearchBehavior::Results { count: 3 });
+    match behavior {
+        SearchBehavior::Results { count } => {
+            let results: Vec<serde_json::Value> = (0..count)
+                .map(|i| {
+                    serde_json::json!({
+                        "title": format!("{q} result {i}"),
+                        "url": format!("https://search.example/{q}/{i}"),
+                        "snippet": format!("snippet for {q} #{i}"),
+                        "page_age": "1d"
+                    })
+                })
+                .collect();
+            axum::Json(serde_json::json!({ "results": results })).into_response()
+        }
+        SearchBehavior::Error => axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        SearchBehavior::Delay(secs) => {
+            tokio::time::sleep(Duration::from_secs(secs)).await;
+            let results: Vec<serde_json::Value> = (0..2)
+                .map(|i| {
+                    serde_json::json!({
+                        "title": "late", "url": format!("https://search.example/late/{i}")
+                    })
+                })
+                .collect();
+            axum::Json(serde_json::json!({ "results": results })).into_response()
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -173,6 +287,49 @@ async fn mock_chat(
             "usage": {"prompt_tokens": 11, "completion_tokens": 2}
         }))
         .into_response(),
+        Behavior::WebSearch | Behavior::WebSearchAlways => {
+            // The executor folds one `role: "tool"` message per executed
+            // search back into the next round, so a tool message in the
+            // request's `messages` array means the model should stop.
+            let saw_tool = parsed["messages"]
+                .as_array()
+                .is_some_and(|messages| {
+                    messages
+                        .iter()
+                        .any(|message| message["role"] == "tool")
+                });
+            if saw_tool && matches!(behavior, Behavior::WebSearch) {
+                axum::Json(serde_json::json!({
+                    "id": "chatcmpl-ws-final", "object": "chat.completion",
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "found it"},
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {"prompt_tokens": 6, "completion_tokens": 3, "total_tokens": 9}
+                }))
+                .into_response()
+            } else {
+                axum::Json(serde_json::json!({
+                    "id": "chatcmpl-ws-round", "object": "chat.completion",
+                    "choices": [{
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": null,
+                            "tool_calls": [{
+                                "id": "call_ws_1",
+                                "type": "function",
+                                "function": {"name": "web_search", "arguments": "{\"query\":\"nim-proxy\"}"}
+                            }]
+                        },
+                        "finish_reason": "tool_calls"
+                    }],
+                    "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6}
+                }))
+                .into_response()
+            }
+        }
         Behavior::ExactResponse { content_type, body } => Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, content_type)
@@ -353,6 +510,15 @@ pub struct StoreOpts {
     pub request_timeout_secs: u64,
     pub max_inflight: usize,
     pub strict_passthrough: bool,
+    /// The web_search provider endpoint, or None to keep the store default
+    /// (the keyless Bing RSS). Set to a `MockSearch.url` to exercise T10.
+    pub web_search_base_url: Option<String>,
+    /// web_search.max_results override.
+    pub web_search_max_results: Option<u8>,
+    /// web_search.timeout_secs override.
+    pub web_search_timeout_secs: Option<u64>,
+    /// web_search.format override ("rss" | "json").
+    pub web_search_format: Option<String>,
 }
 
 impl Default for StoreOpts {
@@ -372,6 +538,10 @@ impl Default for StoreOpts {
             request_timeout_secs: 300,
             max_inflight: 512,
             strict_passthrough: false,
+            web_search_base_url: None,
+            web_search_max_results: None,
+            web_search_timeout_secs: None,
+            web_search_format: None,
         }
     }
 }
@@ -386,7 +556,7 @@ impl StoreOpts {
                 "username": name, "password_hash": TEST_HASH, "role": role
             }));
         }
-        serde_json::json!({
+        let mut store = serde_json::json!({
             "version": 1,
             "upstream": {
                 "base_url": upstream,
@@ -409,7 +579,27 @@ impl StoreOpts {
                 "strict_passthrough": self.strict_passthrough,
             },
             "users": users,
-        })
+        });
+        if self.web_search_base_url.is_some()
+            || self.web_search_max_results.is_some()
+            || self.web_search_timeout_secs.is_some()
+            || self.web_search_format.is_some()
+        {
+            let ws = &mut store["web_search"];
+            if let Some(base_url) = &self.web_search_base_url {
+                ws["base_url"] = serde_json::json!(base_url);
+            }
+            if let Some(max_results) = self.web_search_max_results {
+                ws["max_results"] = serde_json::json!(max_results);
+            }
+            if let Some(timeout_secs) = self.web_search_timeout_secs {
+                ws["timeout_secs"] = serde_json::json!(timeout_secs);
+            }
+            if let Some(format) = &self.web_search_format {
+                ws["format"] = serde_json::json!(format);
+            }
+        }
+        store
     }
 }
 

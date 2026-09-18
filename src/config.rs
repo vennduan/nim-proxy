@@ -42,6 +42,8 @@ pub struct StoredConfig {
     #[serde(default)]
     pub governor: GovernorCfg,
     #[serde(default)]
+    pub web_search: WebSearchCfg,
+    #[serde(default)]
     pub users: Vec<User>,
 }
 
@@ -189,6 +191,59 @@ impl Default for GovernorCfg {
     }
 }
 
+/// Whether the `web_search` provider endpoint answers an RSS feed or a JSON
+/// results object.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchFormat {
+    #[default]
+    Rss,
+    Json,
+}
+
+fn default_web_search_base_url() -> String {
+    // nim4cc's WEB_SEARCH_RSS_URL default: keyless Bing RSS.
+    "https://www.bing.com/search".to_owned()
+}
+
+fn default_web_search_max_results() -> u8 {
+    5
+}
+
+fn default_web_search_timeout_secs() -> u64 {
+    30
+}
+
+/// The `web_search` provider settings the in-gateway Messages bridge reads
+/// when it executes a `web_search` server tool (T10).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, ToSchema)]
+pub struct WebSearchCfg {
+    /// The provider endpoint. `http(s)://` only; no link-local hosts (the
+    /// same guard as the upstream base_url). `q` is appended to the URL.
+    #[serde(default = "default_web_search_base_url")]
+    pub base_url: String,
+    /// `rss` (default, keyless Bing-style feed) or `json`.
+    #[serde(default)]
+    pub format: SearchFormat,
+    /// Cap on results per search, 1-50.
+    #[serde(default = "default_web_search_max_results")]
+    pub max_results: u8,
+    /// Per-request provider timeout, 1-300 seconds.
+    #[serde(default = "default_web_search_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+impl Default for WebSearchCfg {
+    fn default() -> Self {
+        Self {
+            base_url: default_web_search_base_url(),
+            format: SearchFormat::default(),
+            max_results: default_web_search_max_results(),
+            timeout_secs: default_web_search_timeout_secs(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct User {
     pub username: String,
@@ -310,6 +365,12 @@ impl StoredConfig {
                 enabled: self.governor.enabled,
                 overrides: self.governor.overrides.clone(),
             },
+            web_search: crate::WebSearchSettings {
+                base_url: self.web_search.base_url.clone(),
+                format: self.web_search.format,
+                max_results: self.web_search.max_results,
+                timeout: Duration::from_secs(self.web_search.timeout_secs.max(1)),
+            },
         }
     }
 }
@@ -395,11 +456,11 @@ fn label_ok(s: &str, max: usize) -> bool {
 /// metadata endpoint (169.254.169.254) and has no legitimate NIM use, so
 /// blocking it defangs the setup-probe SSRF while still allowing loopback
 /// and RFC1918 hosts (local and LAN self-hosted NIM are real use cases).
-pub fn check_base_url(base: &str) -> Result<(), String> {
+fn check_http_base_url(base: &str, label: &str) -> Result<(), String> {
     let rest = base
         .strip_prefix("http://")
         .or_else(|| base.strip_prefix("https://"))
-        .ok_or("upstream base_url must start with http:// or https://")?;
+        .ok_or(format!("{label} must start with http:// or https://"))?;
     let authority = rest.split('/').next().unwrap_or("");
     // A bracketed IPv6 literal keeps its inner colons; otherwise the host is
     // everything up to the port separator.
@@ -410,7 +471,22 @@ pub fn check_base_url(base: &str) -> Result<(), String> {
     };
     let host = host.to_ascii_lowercase();
     if host.starts_with("169.254.") || host.starts_with("fe80:") {
-        return Err("upstream base_url must not point at a link-local address".into());
+        return Err(format!("{label} must not point at a link-local address"));
+    }
+    Ok(())
+}
+
+pub fn check_base_url(base: &str) -> Result<(), String> {
+    check_http_base_url(base, "upstream base_url")
+}
+
+fn check_web_search(ws: &WebSearchCfg) -> Result<(), String> {
+    check_http_base_url(&ws.base_url, "web_search base_url")?;
+    if !(1..=50).contains(&ws.max_results) {
+        return Err("web_search max_results must be 1-50".into());
+    }
+    if !(1..=300).contains(&ws.timeout_secs) {
+        return Err("web_search timeout_secs must be 1-300".into());
     }
     Ok(())
 }
@@ -447,6 +523,7 @@ pub fn validate(sc: &StoredConfig) -> Result<(), String> {
         return Err("slo_target_percent must be a number greater than 0 and at most 100".into());
     }
     check_base_url(&sc.upstream.base_url)?;
+    check_web_search(&sc.web_search)?;
 
     let mut names = std::collections::HashSet::new();
     for u in &sc.users {
@@ -605,6 +682,40 @@ mod tests {
     }
 
     #[test]
+    fn check_web_search_validates_endpoint_and_bounds() {
+        let mut ws = WebSearchCfg::default();
+        assert!(check_web_search(&ws).is_ok(), "defaults must pass");
+        ws.max_results = 1;
+        assert!(check_web_search(&ws).is_ok(), "min max_results must pass");
+        ws.max_results = 50;
+        assert!(check_web_search(&ws).is_ok(), "max max_results must pass");
+        ws.timeout_secs = 1;
+        assert!(check_web_search(&ws).is_ok(), "min timeout must pass");
+        ws.timeout_secs = 300;
+        assert!(check_web_search(&ws).is_ok(), "max timeout must pass");
+
+        let mut bad = ws.clone();
+        bad.max_results = 0;
+        assert!(check_web_search(&bad).is_err(), "max_results 0 must fail");
+        bad.max_results = 51;
+        assert!(check_web_search(&bad).is_err(), "max_results 51 must fail");
+        bad.max_results = 5;
+        bad.timeout_secs = 0;
+        assert!(check_web_search(&bad).is_err(), "timeout 0 must fail");
+        bad.timeout_secs = 301;
+        assert!(check_web_search(&bad).is_err(), "timeout 301 must fail");
+
+        let mut bad = ws.clone();
+        bad.base_url = "http://169.254.169.254/rss".into();
+        assert!(
+            check_web_search(&bad).is_err(),
+            "link-local provider must fail"
+        );
+        bad.base_url = "ftp://example.com/rss".into();
+        assert!(check_web_search(&bad).is_err(), "non-http scheme must fail");
+    }
+
+    #[test]
     fn check_base_url_blocks_link_local_but_allows_local_and_lan() {
         // Legitimate NIM locations pass.
         for ok in [
@@ -637,6 +748,11 @@ mod tests {
         assert_eq!(sc.limits.heartbeat_secs, 10);
         assert_eq!(sc.client_auth.mode, Mode::Keyed, "fail closed by default");
         assert!(sc.governor.enabled);
+        assert_eq!(
+            sc.web_search,
+            WebSearchCfg::default(),
+            "web_search defaults must be the keyless RSS default"
+        );
         assert!(sc.superuser().is_none(), "no users -> setup mode");
         validate(&sc).expect("a fresh store is valid");
     }
@@ -1071,6 +1187,24 @@ mod tests {
                         owner: "ghost".into(),
                     })
                 }),
+            ),
+            (
+                "link-local web_search endpoint",
+                Box::new(|sc| {
+                    sc.web_search.base_url = "http://169.254.169.254/rss".into();
+                }),
+            ),
+            (
+                "web_search max_results zero",
+                Box::new(|sc| sc.web_search.max_results = 0),
+            ),
+            (
+                "web_search max_results too large",
+                Box::new(|sc| sc.web_search.max_results = 51),
+            ),
+            (
+                "web_search timeout zero",
+                Box::new(|sc| sc.web_search.timeout_secs = 0),
             ),
         ];
         for (name, mutate) in cases {
