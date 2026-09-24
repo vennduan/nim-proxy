@@ -18,7 +18,7 @@ use crate::api::{
     MintedClientKey, NimKeyRow, OkResponse, PoolSummary, ServerSettings, SetupResponse, UserRow,
     ValidateKeyResponse,
 };
-use crate::config::{self, NimKey, Role, StoredConfig, User};
+use crate::config::{self, Role, StoredConfig, UpKey, User};
 use crate::{auth, AppState};
 
 /// Commit a candidate store: validate, persist, swap the runtime config and
@@ -221,7 +221,7 @@ pub async fn setup_submit(State(state): State<Arc<AppState>>, req: Request) -> R
         // Lockout recovery: keys already in the store belonged to hand-deleted
         // users; the new superuser adopts any orphans, restoring both the
         // ownership rule and the pool-floor invariant.
-        for k in &mut cand.upstream.nim_keys {
+        for k in &mut cand.upstream.keys {
             if k.owner != req.username {
                 k.owner.clone_from(&req.username);
             }
@@ -235,8 +235,12 @@ pub async fn setup_submit(State(state): State<Arc<AppState>>, req: Request) -> R
             cand.upstream.base_url = b.trim().trim_end_matches('/').to_owned();
         }
         for k in &req.nim_keys {
-            cand.upstream.nim_keys.push(NimKey {
+            cand.upstream.keys.push(UpKey {
                 key: k.key.trim().to_owned(),
+                base_url: cand.upstream.base_url.trim_end_matches('/').to_owned(),
+                native: false,
+                inject: true,
+                groups: Vec::new(),
                 owner: req.username.clone(),
                 enabled: true,
                 rpm: k.rpm.unwrap_or(40),
@@ -462,7 +466,7 @@ pub async fn api_config(
         .unwrap_or_default();
     let su_enabled: Vec<&str> = sc
         .upstream
-        .nim_keys
+        .keys
         .iter()
         .filter(|k| k.enabled && k.owner == su)
         .map(|k| k.key.as_str())
@@ -471,7 +475,7 @@ pub async fn api_config(
 
     let nim_keys: Vec<NimKeyRow> = sc
         .upstream
-        .nim_keys
+        .keys
         .iter()
         .filter(|k| admin_view || k.owner == username)
         .map(|k| {
@@ -533,7 +537,7 @@ pub async fn api_config(
                     .count(),
                 nim_keys: sc
                     .upstream
-                    .nim_keys
+                    .keys
                     .iter()
                     .filter(|k| k.owner == u.username)
                     .count(),
@@ -575,6 +579,9 @@ pub struct NimKeysReq {
 #[derive(Deserialize, ToSchema)]
 pub struct AddNimKey {
     key: String,
+    /// Endpoint this key talks to; defaults to the server upstream base_url.
+    #[serde(default)]
+    base_url: Option<String>,
     /// Requests per minute for this key's lane; defaults to 40 (NIM's free
     /// tier).
     rpm: Option<usize>,
@@ -616,8 +623,17 @@ pub async fn nim_keys(
     let mut cand = guard.clone();
     match (req.add, req.remove, req.set) {
         (Some(add), None, None) => {
-            cand.upstream.nim_keys.push(NimKey {
+            cand.upstream.keys.push(UpKey {
                 key: add.key.trim().to_owned(),
+                base_url: add
+                    .base_url
+                    .unwrap_or_else(|| cand.upstream.base_url.clone())
+                    .trim()
+                    .trim_end_matches('/')
+                    .to_owned(),
+                native: false,
+                inject: true,
+                groups: Vec::new(),
                 owner: username,
                 enabled: true,
                 rpm: add.rpm.unwrap_or(40),
@@ -626,21 +642,21 @@ pub async fn nim_keys(
         (None, Some(fp), None) => {
             let Some(pos) = cand
                 .upstream
-                .nim_keys
+                .keys
                 .iter()
                 .position(|k| fingerprint(&k.key) == fp)
             else {
                 return bad_request("no such key");
             };
-            if !role.is_admin() && cand.upstream.nim_keys[pos].owner != username {
+            if !role.is_admin() && cand.upstream.keys[pos].owner != username {
                 return forbidden("you can only remove your own keys");
             }
-            cand.upstream.nim_keys.remove(pos);
+            cand.upstream.keys.remove(pos);
         }
         (None, None, Some(set)) => {
             let Some(k) = cand
                 .upstream
-                .nim_keys
+                .keys
                 .iter_mut()
                 .find(|k| fingerprint(&k.key) == set.fingerprint)
             else {
@@ -1163,7 +1179,7 @@ pub async fn users(
                 return forbidden("the superuser can never be deleted");
             }
             cand.users.retain(|u| u.username != target);
-            cand.upstream.nim_keys.retain(|k| k.owner != target);
+            cand.upstream.keys.retain(|k| k.owner != target);
             cand.client_auth.keys.retain(|c| c.owner != target);
         }
         (None, None, Some(reset), None) => {
