@@ -24,6 +24,7 @@ use crate::observation::{
     observe_buffered, usage_observation_metrics, FinishResult, Observation, ResponseObservations,
     SseObserver, StreamOutcome,
 };
+use crate::pool::LaneFilter;
 use crate::{AppState, Config};
 use serde_json::Value;
 
@@ -151,10 +152,11 @@ async fn reserve_slot(
     heartbeat: Duration,
     deadline: Instant,
     prefer: Option<usize>,
+    filter: &crate::pool::LaneFilter,
     mut on_wait: impl FnMut() -> bool,
 ) -> Option<Slot> {
     let queued = Instant::now();
-    let mut rx = state.dispatch.acquire(deadline, prefer);
+    let mut rx = state.dispatch.acquire(deadline, prefer, filter.clone());
     loop {
         tokio::select! {
             slot = &mut rx => {
@@ -1278,7 +1280,15 @@ async fn buffered(
             record_request(&ctx, "504");
             return gateway_timeout(&cfg, state.pool().len());
         };
-        let Some(slot) = reserve_slot(&state, cfg.heartbeat, deadline, prefer, || true).await
+        let Some(slot) = reserve_slot(
+            &state,
+            cfg.heartbeat,
+            deadline,
+            prefer,
+            &LaneFilter::default(),
+            || true,
+        )
+        .await
         else {
             record_request(&ctx, "504");
             return gateway_timeout(&cfg, state.pool().len());
@@ -1413,9 +1423,14 @@ fn streaming(
                         .await;
                     return;
                 };
-                let slot = reserve_slot(&state, cfg.heartbeat, deadline, prefer, || {
-                    send_control_frame(&tx, &tr)
-                })
+                let slot = reserve_slot(
+                    &state,
+                    cfg.heartbeat,
+                    deadline,
+                    prefer,
+                    &LaneFilter::default(),
+                    || send_control_frame(&tx, &tr),
+                )
                 .await;
                 let Some(slot) = slot else {
                     record_request(&ctx, "504");
@@ -1666,7 +1681,16 @@ async fn models(state: Arc<AppState>, cfg: Arc<Config>) -> Response {
         }
     }
     let deadline = Instant::now() + Duration::from_secs(30);
-    let Some(slot) = reserve_slot(&state, cfg.heartbeat, deadline, None, || true).await else {
+    let Some(slot) = reserve_slot(
+        &state,
+        cfg.heartbeat,
+        deadline,
+        None,
+        &LaneFilter::default(),
+        || true,
+    )
+    .await
+    else {
         return gateway_timeout(&cfg, state.pool().len());
     };
     match fetch_models(&state.http, &cfg.base_url, &slot.key).await {

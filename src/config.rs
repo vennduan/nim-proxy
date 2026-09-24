@@ -394,6 +394,10 @@ impl StoredConfig {
             .iter()
             .map(|k| crate::pool::LaneSpec {
                 key: k.key.clone(),
+                base_url: k.base_url.trim_end_matches('/').to_owned(),
+                native: k.native,
+                inject: k.inject,
+                groups: k.groups.clone(),
                 rpm: k.rpm,
                 enabled: k.enabled,
             })
