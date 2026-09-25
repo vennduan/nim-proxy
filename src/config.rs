@@ -630,6 +630,15 @@ pub fn validate(sc: &StoredConfig) -> Result<(), String> {
             return Err(format!("key rpm {} out of range 1-100000", k.rpm));
         }
         check_http_base_url(&k.base_url, "key base_url")?;
+        // A native key serves /v1/messages on its own endpoint — the global
+        // upstream base_url is NIM's OpenAI-compatible shape, so inheriting
+        // it would route Anthropic bytes at the wrong wire.
+        if k.native && k.base_url == sc.upstream.base_url {
+            return Err(
+                "a native key needs its own base_url (the global upstream                  base_url is not a native Anthropic endpoint)"
+                    .into(),
+            );
+        }
         for g in &k.groups {
             if !label_ok(g, 32) {
                 return Err(format!(
@@ -1243,6 +1252,13 @@ mod tests {
                 Box::new(|sc| sc.upstream.keys[0].groups.push("g 1".into())),
             ),
             (
+                "native key without its own endpoint",
+                Box::new(|sc| {
+                    sc.upstream.keys[0].native = true;
+                    sc.upstream.keys[0].base_url = sc.upstream.base_url.clone();
+                }),
+            ),
+            (
                 "bad client key name",
                 Box::new(|sc| {
                     sc.client_auth.keys.push(ClientKey {
@@ -1432,6 +1448,19 @@ mod tests {
         sc.upstream.keys[0].groups.push("x y".into());
         assert!(validate(&sc).is_err(), "bad group label is rejected");
         sc.upstream.keys[0].groups.pop();
+        // A native key is valid on its own distinct endpoint but not when
+        // it still points at the global (NIM-shaped) upstream base_url.
+        sc.upstream.keys[0].native = true;
+        sc.upstream.keys[0].base_url = "http://127.0.0.1:49331".into();
+        assert!(
+            validate(&sc).is_ok(),
+            "native key with own endpoint is valid"
+        );
+        sc.upstream.keys[0].base_url = sc.upstream.base_url.clone();
+        assert!(
+            validate(&sc).is_err(),
+            "native key inheriting the global base_url is rejected"
+        );
         sc.upstream.keys[0].base_url = "http://169.254.169.254/v1".into();
         assert!(
             validate(&sc).is_err(),

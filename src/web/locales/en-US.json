@@ -1150,6 +1150,22 @@
       "en": "Request failed (HTTP {status}).",
       "hash": "3692891d"
     },
+    "settings.groups.empty": {
+      "en": "No keys carry group labels yet.",
+      "hash": "03607e59"
+    },
+    "settings.groups.heading": {
+      "en": "Groups",
+      "hash": "39bbb719"
+    },
+    "settings.groups.note": {
+      "en": "Keys aggregate under their /gN labels; /gN requests only reach labelled keys.",
+      "hash": "211f787f"
+    },
+    "settings.groups.rpm": {
+      "en": "Group rpm",
+      "hash": "500572cf"
+    },
     "settings.key.add_anyway": {
       "en": "Add anyway",
       "hash": "d0652ad3"
@@ -1157,6 +1173,26 @@
     "settings.key.empty": {
       "en": "No NIM API keys yet — add one below",
       "hash": "fa52e200"
+    },
+    "settings.key.endpoint": {
+      "en": "Endpoint (optional)",
+      "hash": "7b1d8d7b"
+    },
+    "settings.key.endpoint_default": {
+      "en": "default endpoint",
+      "hash": "579b6266"
+    },
+    "settings.key.group_title": {
+      "en": "Group label: requests to this /gN route reach the key",
+      "hash": "647560e2"
+    },
+    "settings.key.groups": {
+      "en": "Group labels, comma-separated",
+      "hash": "d21d5e8b"
+    },
+    "settings.key.groups_ph": {
+      "en": "g1, g2",
+      "hash": "311c6ec5"
     },
     "settings.key.guarded": {
       "en": "Protected: the superuser must keep at least one enabled NIM API key. Add or enable another before removing this one.",
@@ -1170,6 +1206,22 @@
       "en": "My NIM API keys",
       "hash": "af1c4f87"
     },
+    "settings.key.inject": {
+      "en": "stream_options patch",
+      "hash": "64cf8bb7"
+    },
+    "settings.key.native": {
+      "en": "Anthropic-native",
+      "hash": "a65ce268"
+    },
+    "settings.key.native_needs_endpoint": {
+      "en": "A native key needs its own endpoint — set the endpoint field.",
+      "hash": "2e777762"
+    },
+    "settings.key.native_title": {
+      "en": "Native endpoint: /v1/messages is byte pass-through with x-api-key auth",
+      "hash": "c079b829"
+    },
     "settings.key.notice.admin": {
       "en": "Keys you add are assigned to your account and join the shared pool. Changes take effect immediately. Disabling a key preserves its rate-limit state.",
       "hash": "4b69ae49"
@@ -1182,6 +1234,10 @@
       "en": "Disabled",
       "hash": "75081b59"
     },
+    "settings.key.own_endpoint": {
+      "en": "own endpoint",
+      "hash": "e12a1886"
+    },
     "settings.key.placeholder": {
       "en": "Paste a new NIM API key (nvapi-…)",
       "hash": "4c922c00"
@@ -1189,6 +1245,14 @@
     "settings.key.pool_note": {
       "en": "Pool: {enabled} enabled · Total: {capacity} rpm",
       "hash": "c2936548"
+    },
+    "settings.key.pure_routing": {
+      "en": "pure routing",
+      "hash": "de24cf19"
+    },
+    "settings.key.pure_routing_title": {
+      "en": "No stream_options patch on this key",
+      "hash": "b6d253bc"
     },
     "settings.key.remove": {
       "en": "Remove NIM API key",

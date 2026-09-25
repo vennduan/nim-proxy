@@ -103,6 +103,15 @@ pub struct CreateClientKey {
 pub struct SetupKey {
     key: String,
     rpm: Option<usize>,
+    /// Anthropic-native endpoint (the advanced base URL becomes its key).
+    #[serde(default)]
+    native: bool,
+    /// Gate the NIM stream_options compatibility patch.
+    #[serde(default = "default_inject_default")]
+    inject: bool,
+    /// `/gN` routing labels.
+    #[serde(default)]
+    groups: Vec<String>,
 }
 
 /// The native form uses the same atomic claim as the JavaScript wizard. It is
@@ -128,6 +137,9 @@ impl From<NoScriptSetupForm> for SetupReq {
             .map(|key| SetupKey {
                 key,
                 rpm: form.nim_rpm,
+                native: false,
+                inject: true,
+                groups: Vec::new(),
             })
             .into_iter()
             .collect();
@@ -235,12 +247,16 @@ pub async fn setup_submit(State(state): State<Arc<AppState>>, req: Request) -> R
             cand.upstream.base_url = b.trim().trim_end_matches('/').to_owned();
         }
         for k in &req.nim_keys {
+            // A native key inherits the wizard's URL as its own endpoint
+            // (the global base_url is NIM-shaped; validation would reject
+            // a native key still pointing at it — the wizard must have set
+            // the advanced URL).
             cand.upstream.keys.push(UpKey {
                 key: k.key.trim().to_owned(),
                 base_url: cand.upstream.base_url.trim_end_matches('/').to_owned(),
-                native: false,
-                inject: true,
-                groups: Vec::new(),
+                native: k.native,
+                inject: k.inject,
+                groups: k.groups.clone(),
                 owner: req.username.clone(),
                 enabled: true,
                 rpm: k.rpm.unwrap_or(40),
@@ -481,13 +497,17 @@ pub async fn api_config(
         .map(|k| {
             let lane = stats.get(&k.key);
             NimKeyRow {
+                base_url: k.base_url.clone(),
                 cooldown_ms: lane.map(|(_, _, c)| *c),
                 enabled: k.enabled,
                 fingerprint: fingerprint(&k.key),
+                groups: k.groups.clone(),
                 guarded: guarded_key.as_deref() == Some(k.key.as_str()),
+                inject: k.inject,
                 in_window: lane.map(|(_, w, _)| *w),
                 lane: lane.map(|(i, _, _)| *i),
                 last4: last4(&k.key),
+                native: k.native,
                 owner: k.owner.clone(),
                 rpm: k.rpm,
             }
@@ -582,6 +602,15 @@ pub struct AddNimKey {
     /// Endpoint this key talks to; defaults to the server upstream base_url.
     #[serde(default)]
     base_url: Option<String>,
+    /// Anthropic-native endpoint (body pass-through on /v1/messages).
+    #[serde(default)]
+    native: bool,
+    /// Gate the NIM stream_options compatibility patch on this key.
+    #[serde(default = "default_inject_default")]
+    inject: bool,
+    /// `/gN` routing labels; empty = default pool member.
+    #[serde(default)]
+    groups: Vec<String>,
     /// Requests per minute for this key's lane; defaults to 40 (NIM's free
     /// tier).
     rpm: Option<usize>,
@@ -592,6 +621,17 @@ pub struct SetNimKey {
     fingerprint: String,
     enabled: Option<bool>,
     rpm: Option<usize>,
+    /// Endpoint this key talks to. A native key must differ from the
+    /// global upstream base_url (validated on commit).
+    base_url: Option<String>,
+    native: Option<bool>,
+    inject: Option<bool>,
+    /// Gating labels for `/gN` routes.
+    groups: Option<Vec<String>>,
+}
+
+fn default_inject_default() -> bool {
+    true
 }
 
 /// `POST /api/settings/nim-keys` — any role may add keys (owner = caller)
@@ -631,9 +671,9 @@ pub async fn nim_keys(
                     .trim()
                     .trim_end_matches('/')
                     .to_owned(),
-                native: false,
-                inject: true,
-                groups: Vec::new(),
+                native: add.native,
+                inject: add.inject,
+                groups: add.groups,
                 owner: username,
                 enabled: true,
                 rpm: add.rpm.unwrap_or(40),
@@ -670,6 +710,18 @@ pub async fn nim_keys(
             }
             if let Some(rpm) = set.rpm {
                 k.rpm = rpm;
+            }
+            if let Some(base_url) = set.base_url {
+                k.base_url = base_url.trim().trim_end_matches('/').to_owned();
+            }
+            if let Some(native) = set.native {
+                k.native = native;
+            }
+            if let Some(inject) = set.inject {
+                k.inject = inject;
+            }
+            if let Some(groups) = set.groups {
+                k.groups = groups;
             }
         }
         _ => return bad_request("send exactly one of add / remove / set"),

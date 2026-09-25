@@ -5006,6 +5006,52 @@ async fn dashboard_web_search_settings_markup() {
     );
 }
 
+/// The settings access tab carries the group view (T4): per-key group
+/// chips, the aggregated group card, and the group-edit input —
+/// catalog-owned markup, asserted against the served assets.
+#[tokio::test]
+async fn dashboard_group_settings_markup() {
+    let mock = start_mock().await;
+    let proxy = start_proxy(&mock.url, &[]).await;
+    let cookie = login(&proxy).await;
+
+    let settings_js = client()
+        .get(proxy.url("/assets/operator/settings.js"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let catalog: serde_json::Value = client()
+        .get(proxy.url("/assets/operator/locales/en-US.json"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    for field in [
+        "nk-base",
+        "nk-native",
+        "nk-inject",
+        "nk-groups",
+        "data-groups",
+        "settings.groups.heading",
+        "settings.key.native_needs_endpoint",
+    ] {
+        assert!(settings_js.contains(field), "settings.js carries {field}");
+    }
+    assert!(settings_js.contains(r#"data-i18n="settings.groups.heading""#));
+    assert_eq!(catalog["messages"]["settings.groups.heading"], "Groups");
+    assert_eq!(
+        catalog["messages"]["settings.key.native_needs_endpoint"],
+        "A native key needs its own endpoint — set the endpoint field."
+    );
+}
+
 #[tokio::test]
 async fn dashboard_range_state_guards_markup() {
     let mock = start_mock().await;
@@ -10150,6 +10196,293 @@ async fn native_grant_streams_raw_sse_and_empty_stream_falls_back_to_chat() {
     assert!(
         chat.state.hit_count() >= 1,
         "the empty native streams fell back to a chat lane"
+    );
+    proxy.terminate();
+}
+
+// ---------- T4: settings endpoints + dashboard group view ----------
+
+fn t4_flat_store(chat: &support::MockNim, native: &support::MockNative) -> support::StoreOpts {
+    support::StoreOpts {
+        flat_keys: vec![
+            support::FlatKey {
+                key: "nim-key".into(),
+                base_url: chat.url.clone(),
+                native: false,
+                inject: true,
+                groups: vec!["g1".into()],
+                rpm: 40,
+            },
+            support::FlatKey {
+                key: "chat-key".into(),
+                base_url: chat.url.clone(),
+                native: false,
+                inject: false,
+                groups: vec!["g1".into(), "g2".into()],
+                rpm: 1,
+            },
+            support::FlatKey {
+                key: "native-key".into(),
+                base_url: native.url.clone(),
+                native: true,
+                inject: false,
+                groups: vec!["g2".into()],
+                rpm: 2,
+            },
+        ],
+        extra_users: vec![("alice".into(), "user".into())],
+        max_wait_secs: 2,
+        ..Default::default()
+    }
+}
+
+fn fp(key: &str) -> String {
+    support::sha256_hex(key)[..8].to_owned()
+}
+
+/// The dashboard group view is pure aggregation over the role-filtered rows:
+/// per-label member lists and enabled-rpm sums must agree with the rows, and
+/// a member edit must be durable on disk.
+#[tokio::test]
+async fn group_view_aggregates_members_and_edits_are_durable() {
+    let chat = support::start_mock().await;
+    let native = support::start_native_mock().await;
+    let proxy = support::start_proxy_with(&chat.url, t4_flat_store(&chat, &native), &[]).await;
+    let root = support::login(&proxy).await;
+
+    let cfg = api_config(&proxy, &root).await;
+    let rows = &cfg["nim_keys"].as_array().unwrap();
+    let group_of = |g: &str| {
+        rows.iter()
+            .filter(|k| {
+                k["groups"]
+                    .as_array()
+                    .map_or(false, |gs| gs.iter().any(|x| x == g))
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(group_of("g1").len(), 2, "g1: nim-key + chat-key");
+    let g1_rpm: usize = group_of("g1")
+        .iter()
+        .filter(|k| k["enabled"].as_bool() == Some(true))
+        .map(|k| k["rpm"].as_u64().unwrap() as usize)
+        .sum();
+    assert_eq!(g1_rpm, 41, "g1 group rpm sums the enabled members");
+    let g2 = group_of("g2");
+    assert_eq!(g2.len(), 2, "g2: chat-key + native-key");
+    assert_eq!(
+        g2.iter()
+            .filter(|k| k["native"].as_bool() == Some(true))
+            .count(),
+        1
+    );
+
+    // Member editing: move nim-key into both groups.
+    let fp = fp("nim-key");
+    let (status, v) = post_json(
+        &proxy,
+        &root,
+        "/api/settings/nim-keys",
+        serde_json::json!({"set": {"fingerprint": fp, "groups": ["g1", "g2"]}}),
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    let cfg2 = api_config(&proxy, &root).await;
+    let rows2 = &cfg2["nim_keys"].as_array().unwrap();
+    let g2_now = rows2
+        .iter()
+        .filter(|k| {
+            k["groups"]
+                .as_array()
+                .map_or(false, |gs| gs.iter().any(|x| x == "g2"))
+        })
+        .count();
+    assert_eq!(g2_now, 3, "the edited key now serves g2 as well");
+    // The durable store carries the edit (the pool rebuilt from it on commit).
+    let store: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(proxy.data_dir.join("config.json")).unwrap())
+            .unwrap();
+    let updated = store["upstream"]["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["key"] == "nim-key")
+        .unwrap();
+    assert_eq!(updated["groups"], serde_json::json!(["g1", "g2"]));
+
+    // A user role sees only their own rows — the group view aggregates the
+    // filtered view, so it never leaks other keys.
+    let alice = support::login_as(&proxy, "alice").await;
+    let (status, v) = post_json(
+        &proxy,
+        &alice,
+        "/api/settings/nim-keys",
+        serde_json::json!({"add": {"key": "alice-key", "groups": ["g1"], "rpm": 10}}),
+    )
+    .await;
+    assert_eq!(status.as_u16(), 200, "{v}");
+    let cfg3 = api_config(&proxy, &alice).await;
+    let rows3 = &cfg3["nim_keys"].as_array().unwrap();
+    assert_eq!(rows3.len(), 1, "the user view carries only the user's key");
+    assert_eq!(rows3[0]["groups"][0], "g1");
+    proxy.terminate();
+}
+
+/// Native keys are add-able through the endpoint with their own endpoint;
+/// a native key still pointing at the global NIM-shaped base_url, and a bad
+/// group label, are rejected at commit.
+#[tokio::test]
+async fn native_key_endpoint_add_and_store_rejections() {
+    let chat = support::start_mock().await;
+    let native = support::start_native_mock().await;
+    let proxy = support::start_proxy_with(&chat.url, support::StoreOpts::default(), &[]).await;
+    let root = support::login(&proxy).await;
+
+    let (status, v) = post_json(
+        &proxy,
+        &root,
+        "/api/settings/nim-keys",
+        serde_json::json!({"add": {"key": "anth-x", "base_url": native.url.clone(), "native": true, "inject": false, "groups": ["anth"], "rpm": 20}}),
+    )
+    .await;
+    assert_eq!(status.as_u16(), 200, "{v}");
+    let cfg = api_config(&proxy, &root).await;
+    let rows = &cfg["nim_keys"].as_array().unwrap();
+    let r = rows
+        .iter()
+        .find(|k| k["fingerprint"] == fp("anth-x"))
+        .unwrap();
+    assert_eq!(r["native"], serde_json::json!(true));
+    assert_eq!(r["inject"], serde_json::json!(false));
+    assert_eq!(r["base_url"], native.url);
+    assert_eq!(r["groups"], serde_json::json!(["anth"]));
+
+    // A native key on the global NIM-shaped endpoint is rejected.
+    let (status, v) = post_json(
+        &proxy,
+        &root,
+        "/api/settings/nim-keys",
+        serde_json::json!({"add": {"key": "anth-y", "native": true, "rpm": 20}}),
+    )
+    .await;
+    assert_eq!(
+        status.as_u16(),
+        400,
+        "a native key needs its own endpoint: {v}"
+    );
+    // A bad group label is rejected at commit (the validator rulebook).
+    let (status, v) = post_json(
+        &proxy,
+        &root,
+        "/api/settings/nim-keys",
+        serde_json::json!({"add": {"key": "g-bad", "groups": ["Bad G"], "rpm": 20}}),
+    )
+    .await;
+    assert_eq!(status.as_u16(), 400, "bad group label: {v}");
+    proxy.terminate();
+}
+
+/// Changing one key's rpm re-points only that key's window: on a group of
+/// one chat key (rpm 1) and one inject-off pure-routing key, exhausting the
+/// chat key's window does not drag the group's other members with it, and
+/// raising the chat key's rpm gives the group headroom immediately.
+#[tokio::test]
+async fn rpm_change_only_touches_the_edited_key_window() {
+    let chat = support::start_mock().await;
+    let proxy = support::start_proxy_with(
+        &chat.url,
+        support::StoreOpts {
+            flat_keys: vec![
+                support::FlatKey {
+                    key: "g-solo-key".into(),
+                    base_url: chat.url.clone(),
+                    native: false,
+                    inject: true,
+                    groups: vec!["solo".into()],
+                    rpm: 1,
+                },
+                support::FlatKey {
+                    key: "g-other-key".into(),
+                    base_url: chat.url.clone(),
+                    native: false,
+                    inject: false,
+                    groups: vec!["solo".into()],
+                    rpm: 40,
+                },
+            ],
+            max_wait_secs: 2,
+            ..Default::default()
+        },
+        &[],
+    )
+    .await;
+    let root = support::login(&proxy).await;
+
+    // Both group members carry traffic until g-solo-key's rpm-1 window
+    // spends; the group then keeps routing g-other-key alone.
+    for i in 0..3 {
+        let r = client()
+            .post(proxy.url("/solo/v1/chat/completions"))
+            .json(&support::chat_body(&format!("solo {i}"), false))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200, "g-requests keep serving: {i}");
+    }
+    let solo_hits = chat
+        .state
+        .hits
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|h| h.key == "g-solo-key")
+        .count();
+    assert_eq!(solo_hits, 1, "the rpm-1 key served exactly one request");
+
+    // Raising the edited key's rpm re-points only its window — the group's
+    // rpm-1 member gets a second request now; the unedited key's window is
+    // untouched (still whatever it held).
+    let (status, v) = post_json(
+        &proxy,
+        &root,
+        "/api/settings/nim-keys",
+        serde_json::json!({"set": {"fingerprint": fp("g-solo-key"), "rpm": 5}}),
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    let other_before = api_config(&proxy, &root).await["nim_keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["fingerprint"] == fp("g-other-key"))
+        .unwrap()["in_window"]
+        .clone();
+    let fourth = client()
+        .post(proxy.url("/solo/v1/chat/completions"))
+        .json(&support::chat_body("solo again", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(fourth.status(), 200, "raised rpm serves from the group");
+    let solo_hits = chat
+        .state
+        .hits
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|h| h.key == "g-solo-key")
+        .count();
+    assert_eq!(solo_hits, 2, "the raised key now serves again");
+    let other_after = api_config(&proxy, &root).await["nim_keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["fingerprint"] == fp("g-other-key"))
+        .unwrap()["in_window"]
+        .clone();
+    assert_eq!(
+        other_before, other_after,
+        "the unedited key's window is unchanged by the sibling's rpm raise"
     );
     proxy.terminate();
 }
