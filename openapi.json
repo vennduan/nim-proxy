@@ -1792,6 +1792,13 @@
           "key"
         ],
         "properties": {
+          "base_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Endpoint this key talks to; defaults to the server upstream base_url."
+          },
           "key": {
             "type": "string"
           },

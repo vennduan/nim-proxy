@@ -53,12 +53,47 @@ impl Default for StoredConfig {
     }
 }
 
+/// Upstream key pool. New stores use [`Upstream::keys`] (per-key
+/// `base_url`, `native`, `inject`, `groups`); old v1 stores that only
+/// carry `base_url` + `nim_keys` are migrated on load — the legacy fields
+/// stay in the struct only so the old bytes still deserialize, and they
+/// are never serialized again (single one-way migration, idempotent).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Upstream {
     #[serde(default = "default_base_url")]
     pub base_url: String,
     #[serde(default)]
+    #[serde(skip_serializing)]
     pub nim_keys: Vec<NimKey>,
+    #[serde(default)]
+    pub keys: Vec<UpKey>,
+}
+
+impl Upstream {
+    /// Migrate a legacy upstream block (bytes that only carry `base_url` +
+    /// `nim_keys`) to the flat key schema: every legacy key becomes an
+    /// `UpKey` inheriting the global `base_url` (NIM's endpoint shape, so
+    /// `inject = true`). One-way: legacy fields are `skip_serializing`, so
+    /// after one save the block holds only `keys` and this is a no-op.
+    pub fn migrate(&mut self) {
+        if self.keys.is_empty() && !self.nim_keys.is_empty() {
+            let base = self.base_url.trim_end_matches('/').to_owned();
+            self.keys = self
+                .nim_keys
+                .drain(..)
+                .map(|k| UpKey {
+                    key: k.key,
+                    base_url: base.clone(),
+                    native: false,
+                    inject: true,
+                    groups: Vec::new(),
+                    owner: k.owner,
+                    enabled: k.enabled,
+                    rpm: k.rpm,
+                })
+                .collect();
+        }
+    }
 }
 
 impl Default for Upstream {
@@ -66,8 +101,33 @@ impl Default for Upstream {
         Self {
             base_url: default_base_url(),
             nim_keys: Vec::new(),
+            keys: Vec::new(),
         }
     }
+}
+
+/// One upstream key: the secret plus everything routing needs to reach it.
+/// `base_url` is per key (endpoint shape follows the key, not a global);
+/// `native` marks an Anthropic-native endpoint (body pass-through,
+/// `x-api-key` auth, `/v1/messages` only); `inject` gates the NIM-only
+/// stream_options compatibility patch; `groups` are routing labels
+/// (`/g{n}` prefix selection; empty = default pool member).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UpKey {
+    pub key: String,
+    #[serde(default = "default_base_url")]
+    pub base_url: String,
+    #[serde(default)]
+    pub native: bool,
+    #[serde(default = "default_true")]
+    pub inject: bool,
+    #[serde(default)]
+    pub groups: Vec<String>,
+    pub owner: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_rpm")]
+    pub rpm: usize,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -330,10 +390,14 @@ impl StoredConfig {
     /// state carriers so a disable→enable cycle can't reset their windows.
     pub fn pool_specs(&self) -> Vec<crate::pool::LaneSpec> {
         self.upstream
-            .nim_keys
+            .keys
             .iter()
             .map(|k| crate::pool::LaneSpec {
                 key: k.key.clone(),
+                base_url: k.base_url.trim_end_matches('/').to_owned(),
+                native: k.native,
+                inject: k.inject,
+                groups: k.groups.clone(),
                 rpm: k.rpm,
                 enabled: k.enabled,
             })
@@ -395,7 +459,7 @@ pub fn load(dir: &Path) -> Result<Option<StoredConfig>, String> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
     };
-    let sc: StoredConfig = serde_json::from_str(&raw).map_err(|e| {
+    let mut sc: StoredConfig = serde_json::from_str(&raw).map_err(|e| {
         format!(
             "{} is corrupt ({e}); restore it from backup, or delete it to re-run first-time setup (this discards all settings and keys)",
             path.display()
@@ -408,6 +472,7 @@ pub fn load(dir: &Path) -> Result<Option<StoredConfig>, String> {
             sc.version
         ));
     }
+    sc.upstream.migrate();
     validate(&sc)?;
     Ok(Some(sc))
 }
@@ -554,15 +619,24 @@ pub fn validate(sc: &StoredConfig) -> Result<(), String> {
     }
 
     let mut keys = std::collections::HashSet::new();
-    for k in &sc.upstream.nim_keys {
+    for k in &sc.upstream.keys {
         if k.key.trim().is_empty() {
-            return Err("a NIM key is empty".into());
+            return Err("a key is empty".into());
         }
         if !keys.insert(k.key.as_str()) {
-            return Err("duplicate NIM key".into());
+            return Err("duplicate key".into());
         }
-        if !(1..=10_000).contains(&k.rpm) {
-            return Err(format!("NIM key rpm {} out of range 1-10000", k.rpm));
+        if !(1..=100_000).contains(&k.rpm) {
+            return Err(format!("key rpm {} out of range 1-100000", k.rpm));
+        }
+        check_http_base_url(&k.base_url, "key base_url")?;
+        for g in &k.groups {
+            if !label_ok(g, 32) {
+                return Err(format!(
+                    "key group {:?} must be 1-32 chars of letters, digits, '_', or '-'",
+                    g
+                ));
+            }
         }
     }
 
@@ -597,9 +671,9 @@ pub fn validate(sc: &StoredConfig) -> Result<(), String> {
     // (has a superuser). A recovery store — users hand-emptied on the volume
     // — legitimately holds orphan-owned keys until the wizard reassigns them.
     if let Some(su) = sc.superuser() {
-        for k in &sc.upstream.nim_keys {
+        for k in &sc.upstream.keys {
             if sc.user(&k.owner).is_none() {
-                return Err(format!("NIM key owner {:?} is not a user", k.owner));
+                return Err(format!("key owner {:?} is not a user", k.owner));
             }
         }
         for c in &sc.client_auth.keys {
@@ -612,13 +686,11 @@ pub fn validate(sc: &StoredConfig) -> Result<(), String> {
         }
         if !sc
             .upstream
-            .nim_keys
+            .keys
             .iter()
             .any(|k| k.enabled && k.owner == su.username)
         {
-            return Err(
-                "the superuser must own at least one enabled NIM key (the pool floor)".into(),
-            );
+            return Err("the superuser must own at least one enabled key (the pool floor)".into());
         }
     }
     Ok(())
@@ -670,12 +742,17 @@ mod tests {
             }],
             upstream: Upstream {
                 base_url: default_base_url(),
-                nim_keys: vec![NimKey {
+                keys: vec![UpKey {
                     key: "nvapi-one".into(),
+                    base_url: default_base_url(),
+                    native: false,
+                    inject: true,
+                    groups: Vec::new(),
                     owner: "root".into(),
                     enabled: true,
                     rpm: 40,
                 }],
+                ..Default::default()
             },
             ..Default::default()
         }
@@ -764,7 +841,7 @@ mod tests {
         save(&dir.0, &sc).unwrap();
         let loaded = load(&dir.0).unwrap().expect("store exists");
         assert_eq!(loaded.users[0].username, "root");
-        assert_eq!(loaded.upstream.nim_keys[0].rpm, 40);
+        assert_eq!(loaded.upstream.keys[0].rpm, 40);
         let specs = loaded.pool_specs();
         assert_eq!(specs.len(), 1);
         assert!(specs[0].enabled && specs[0].key == "nvapi-one" && specs[0].rpm == 40);
@@ -814,6 +891,13 @@ mod tests {
         let k: NimKey = serde_json::from_str(r#"{"key":"k","owner":"o"}"#).unwrap();
         assert!(k.enabled);
         assert_eq!(k.rpm, 40);
+        // Flat keys default the new routing fields without requiring them.
+        let uk: UpKey = serde_json::from_str(r#"{"key":"k","owner":"o"}"#).unwrap();
+        assert_eq!(uk.base_url, default_base_url());
+        assert!(!uk.native);
+        assert!(uk.inject);
+        assert!(uk.groups.is_empty());
+        assert_eq!(uk.rpm, 40);
         let g: GovernorCfg = serde_json::from_str("{}").unwrap();
         assert!(g.enabled);
     }
@@ -926,7 +1010,7 @@ mod tests {
         assert_eq!(sc.history.days, 7);
         assert_eq!(sc.dashboard.default_window_days, 3);
         assert_eq!(sc.dashboard.slo_target_percent, 95.5);
-        assert_eq!(sc.upstream.nim_keys[0].rpm, 40);
+        assert_eq!(sc.upstream.keys[0].rpm, 40);
         assert_eq!(sc.users[0].role, Role::Superuser);
 
         // The HashMap -> BTreeMap switch drops no entry and rewrites no value.
@@ -1105,25 +1189,22 @@ mod tests {
                 "empty hash",
                 Box::new(|sc| sc.users[0].password_hash.clear()),
             ),
-            ("rpm zero", Box::new(|sc| sc.upstream.nim_keys[0].rpm = 0)),
+            ("rpm zero", Box::new(|sc| sc.upstream.keys[0].rpm = 0)),
+            ("rpm huge", Box::new(|sc| sc.upstream.keys[0].rpm = 100_001)),
             (
-                "rpm huge",
-                Box::new(|sc| sc.upstream.nim_keys[0].rpm = 10_001),
-            ),
-            (
-                "dup nim key",
+                "dup key",
                 Box::new(|sc| {
-                    let k = sc.upstream.nim_keys[0].clone();
-                    sc.upstream.nim_keys.push(k);
+                    let k = sc.upstream.keys[0].clone();
+                    sc.upstream.keys.push(k);
                 }),
             ),
             (
                 "dangling owner",
-                Box::new(|sc| sc.upstream.nim_keys[0].owner = "ghost".into()),
+                Box::new(|sc| sc.upstream.keys[0].owner = "ghost".into()),
             ),
             (
                 "superuser without enabled key",
-                Box::new(|sc| sc.upstream.nim_keys[0].enabled = false),
+                Box::new(|sc| sc.upstream.keys[0].enabled = false),
             ),
             (
                 "heartbeat >= max_wait",
@@ -1150,8 +1231,16 @@ mod tests {
                 Box::new(|sc| sc.limits.request_timeout_secs = 0),
             ),
             (
-                "empty nim key",
-                Box::new(|sc| sc.upstream.nim_keys[0].key = "   ".into()),
+                "empty key",
+                Box::new(|sc| sc.upstream.keys[0].key = "   ".into()),
+            ),
+            (
+                "key base_url link-local",
+                Box::new(|sc| sc.upstream.keys[0].base_url = "http://169.254.169.254/v1".into()),
+            ),
+            (
+                "key group charset",
+                Box::new(|sc| sc.upstream.keys[0].groups.push("g 1".into())),
             ),
             (
                 "bad client key name",
@@ -1255,6 +1344,99 @@ mod tests {
         );
         sc.client_auth.mode = Mode::Open;
         assert!(sc.runtime().clients.is_none());
+    }
+    /// A legacy store (bytes written by v0.6.6: `base_url` + `nim_keys`, no
+    /// `keys`) loads migrated: every key becomes a flat `UpKey` inheriting
+    /// the global base_url with inject=true, pool behavior is identical, and
+    /// the legacy block disappears after the first save (one-way).
+    #[test]
+    fn legacy_nim_keys_store_migrates_to_flat_keys() {
+        let dir = TestDir::new();
+        let raw = r#"{
+          "version": 1,
+          "upstream": {
+            "base_url": "https://integrate.api.nvidia.com",
+            "nim_keys": [
+              {"key":"nvapi-one","owner":"root","enabled":true,"rpm":40},
+              {"key":"nvapi-two","owner":"root","enabled":false,"rpm":120}
+            ]
+          },
+          "client_auth": {"mode":"keyed","keys":[]},
+          "users": [
+            {"username":"root","password_hash":"pbkdf2-sha256$1000$aa$bb","role":"superuser"}
+          ]
+        }"#;
+        fs::write(store_path(&dir.0), raw).unwrap();
+
+        let sc = load(&dir.0)
+            .expect("legacy store must load")
+            .expect("exists");
+        assert_eq!(sc.upstream.keys.len(), 2, "legacy keys must migrate");
+        assert_eq!(sc.upstream.nim_keys.len(), 0, "migrated keys are drained");
+        let (k0, k1) = (&sc.upstream.keys[0], &sc.upstream.keys[1]);
+        assert_eq!(k0.base_url, "https://integrate.api.nvidia.com");
+        assert!(!k0.native && k0.inject && k0.groups.is_empty());
+        assert_eq!(k0.rpm, 40);
+        assert!(!k1.enabled && k1.rpm == 120, "state carrier rides along");
+        // Pool behavior identical to the pre-migration single pool.
+        let specs = sc.pool_specs();
+        assert_eq!(specs.len(), 2);
+        assert!(specs[0].enabled && !specs[1].enabled);
+        validate(&sc).expect("migrated store must validate");
+
+        // One-way: a save persists only the flat block; reload keeps it.
+        save(&dir.0, &sc).unwrap();
+        let persisted = fs::read_to_string(store_path(&dir.0)).unwrap();
+        assert!(
+            persisted.contains(r#""keys""#),
+            "flat keys must be persisted"
+        );
+        assert!(
+            !persisted.contains(r#""nim_keys""#),
+            "legacy block must not be serialized back: {persisted}"
+        );
+        let again = load(&dir.0).unwrap().expect("round-trip load");
+        assert_eq!(again.upstream.keys.len(), 2);
+        assert!(again.upstream.nim_keys.is_empty());
+    }
+
+    /// New-format stores (flat `keys` present) must not be touched by the
+    /// migration even when a stray legacy array coexists.
+    #[test]
+    fn migration_is_no_op_when_flat_keys_exist() {
+        let dir = TestDir::new();
+        let sc = claimed();
+        save(&dir.0, &sc).unwrap();
+        let loaded = load(&dir.0).unwrap().expect("new-format load");
+        assert_eq!(loaded.upstream.keys.len(), 1);
+        assert!(
+            loaded.upstream.nim_keys.is_empty(),
+            "new format has no legacy block"
+        );
+    }
+
+    /// validate guards the flat key schema: rpm bounds widened to 100000,
+    /// per-key base_url keeps the link-local SSRF guard, groups are
+    /// charset-checked.
+    #[test]
+    fn flat_key_validation_rules() {
+        let mut sc = claimed();
+        assert!(validate(&sc).is_ok());
+        sc.upstream.keys[0].rpm = 100_000;
+        assert!(validate(&sc).is_ok(), "rpm 100000 is in range");
+        sc.upstream.keys[0].rpm = 100_001;
+        assert!(validate(&sc).is_err(), "rpm above 100000 is rejected");
+        sc.upstream.keys[0].rpm = 40;
+        sc.upstream.keys[0].groups = vec!["g1".into(), "a-b_c9".into()];
+        assert!(validate(&sc).is_ok(), "valid group labels pass");
+        sc.upstream.keys[0].groups.push("x y".into());
+        assert!(validate(&sc).is_err(), "bad group label is rejected");
+        sc.upstream.keys[0].groups.pop();
+        sc.upstream.keys[0].base_url = "http://169.254.169.254/v1".into();
+        assert!(
+            validate(&sc).is_err(),
+            "link-local key base_url is rejected"
+        );
     }
 }
 
