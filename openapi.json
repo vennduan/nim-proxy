@@ -1792,8 +1792,30 @@
           "key"
         ],
         "properties": {
+          "base_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Endpoint this key talks to; defaults to the server upstream base_url."
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`/gN` routing labels; empty = default pool member."
+          },
+          "inject": {
+            "type": "boolean",
+            "description": "Gate the NIM stream_options compatibility patch on this key."
+          },
           "key": {
             "type": "string"
+          },
+          "native": {
+            "type": "boolean",
+            "description": "Anthropic-native endpoint (body pass-through on /v1/messages)."
           },
           "rpm": {
             "type": [
@@ -2584,14 +2606,22 @@
         "type": "object",
         "description": "A stored NIM key plus its live lane state. `lane`, `in_window` and\n`cooldown_ms` are null for a disabled key (it holds no lane).",
         "required": [
+          "base_url",
           "enabled",
           "fingerprint",
+          "groups",
           "guarded",
+          "inject",
           "last4",
+          "native",
           "owner",
           "rpm"
         ],
         "properties": {
+          "base_url": {
+            "type": "string",
+            "description": "Endpoint this key talks to (per-key, may differ from the global\nupstream base_url)."
+          },
           "cooldown_ms": {
             "type": [
               "integer",
@@ -2607,6 +2637,13 @@
             "type": "string",
             "description": "First 8 hex chars of SHA-256(key) — the key's public identifier."
           },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Gating labels: which `/gN` routes may reach this key."
+          },
           "guarded": {
             "type": "boolean",
             "description": "True for the superuser's only enabled key: the pool floor, which\n`config::validate` refuses to remove or disable."
@@ -2618,6 +2655,10 @@
             ],
             "minimum": 0
           },
+          "inject": {
+            "type": "boolean",
+            "description": "Gates the NIM stream_options compatibility patch (off for pure\nrouting providers)."
+          },
           "lane": {
             "type": [
               "integer",
@@ -2627,6 +2668,10 @@
           },
           "last4": {
             "type": "string"
+          },
+          "native": {
+            "type": "boolean",
+            "description": "Anthropic-native endpoint: serves /v1/messages pass-through only."
           },
           "owner": {
             "type": "string"
@@ -2839,6 +2884,13 @@
           "fingerprint"
         ],
         "properties": {
+          "base_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Endpoint this key talks to. A native key must differ from the\nglobal upstream base_url (validated on commit)."
+          },
           "enabled": {
             "type": [
               "boolean",
@@ -2847,6 +2899,28 @@
           },
           "fingerprint": {
             "type": "string"
+          },
+          "groups": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Gating labels for `/gN` routes."
+          },
+          "inject": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "native": {
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "rpm": {
             "type": [
@@ -2890,8 +2964,23 @@
           "key"
         ],
         "properties": {
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`/gN` routing labels."
+          },
+          "inject": {
+            "type": "boolean",
+            "description": "Gate the NIM stream_options compatibility patch."
+          },
           "key": {
             "type": "string"
+          },
+          "native": {
+            "type": "boolean",
+            "description": "Anthropic-native endpoint (the advanced base URL becomes its key)."
           },
           "rpm": {
             "type": [

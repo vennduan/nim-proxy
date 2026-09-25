@@ -18,7 +18,7 @@ use crate::api::{
     MintedClientKey, NimKeyRow, OkResponse, PoolSummary, ServerSettings, SetupResponse, UserRow,
     ValidateKeyResponse,
 };
-use crate::config::{self, NimKey, Role, StoredConfig, User};
+use crate::config::{self, Role, StoredConfig, UpKey, User};
 use crate::{auth, AppState};
 
 /// Commit a candidate store: validate, persist, swap the runtime config and
@@ -103,6 +103,15 @@ pub struct CreateClientKey {
 pub struct SetupKey {
     key: String,
     rpm: Option<usize>,
+    /// Anthropic-native endpoint (the advanced base URL becomes its key).
+    #[serde(default)]
+    native: bool,
+    /// Gate the NIM stream_options compatibility patch.
+    #[serde(default = "default_inject_default")]
+    inject: bool,
+    /// `/gN` routing labels.
+    #[serde(default)]
+    groups: Vec<String>,
 }
 
 /// The native form uses the same atomic claim as the JavaScript wizard. It is
@@ -128,6 +137,9 @@ impl From<NoScriptSetupForm> for SetupReq {
             .map(|key| SetupKey {
                 key,
                 rpm: form.nim_rpm,
+                native: false,
+                inject: true,
+                groups: Vec::new(),
             })
             .into_iter()
             .collect();
@@ -221,7 +233,7 @@ pub async fn setup_submit(State(state): State<Arc<AppState>>, req: Request) -> R
         // Lockout recovery: keys already in the store belonged to hand-deleted
         // users; the new superuser adopts any orphans, restoring both the
         // ownership rule and the pool-floor invariant.
-        for k in &mut cand.upstream.nim_keys {
+        for k in &mut cand.upstream.keys {
             if k.owner != req.username {
                 k.owner.clone_from(&req.username);
             }
@@ -235,8 +247,16 @@ pub async fn setup_submit(State(state): State<Arc<AppState>>, req: Request) -> R
             cand.upstream.base_url = b.trim().trim_end_matches('/').to_owned();
         }
         for k in &req.nim_keys {
-            cand.upstream.nim_keys.push(NimKey {
+            // A native key inherits the wizard's URL as its own endpoint
+            // (the global base_url is NIM-shaped; validation would reject
+            // a native key still pointing at it — the wizard must have set
+            // the advanced URL).
+            cand.upstream.keys.push(UpKey {
                 key: k.key.trim().to_owned(),
+                base_url: cand.upstream.base_url.trim_end_matches('/').to_owned(),
+                native: k.native,
+                inject: k.inject,
+                groups: k.groups.clone(),
                 owner: req.username.clone(),
                 enabled: true,
                 rpm: k.rpm.unwrap_or(40),
@@ -462,7 +482,7 @@ pub async fn api_config(
         .unwrap_or_default();
     let su_enabled: Vec<&str> = sc
         .upstream
-        .nim_keys
+        .keys
         .iter()
         .filter(|k| k.enabled && k.owner == su)
         .map(|k| k.key.as_str())
@@ -471,19 +491,23 @@ pub async fn api_config(
 
     let nim_keys: Vec<NimKeyRow> = sc
         .upstream
-        .nim_keys
+        .keys
         .iter()
         .filter(|k| admin_view || k.owner == username)
         .map(|k| {
             let lane = stats.get(&k.key);
             NimKeyRow {
+                base_url: k.base_url.clone(),
                 cooldown_ms: lane.map(|(_, _, c)| *c),
                 enabled: k.enabled,
                 fingerprint: fingerprint(&k.key),
+                groups: k.groups.clone(),
                 guarded: guarded_key.as_deref() == Some(k.key.as_str()),
+                inject: k.inject,
                 in_window: lane.map(|(_, w, _)| *w),
                 lane: lane.map(|(i, _, _)| *i),
                 last4: last4(&k.key),
+                native: k.native,
                 owner: k.owner.clone(),
                 rpm: k.rpm,
             }
@@ -533,7 +557,7 @@ pub async fn api_config(
                     .count(),
                 nim_keys: sc
                     .upstream
-                    .nim_keys
+                    .keys
                     .iter()
                     .filter(|k| k.owner == u.username)
                     .count(),
@@ -575,6 +599,18 @@ pub struct NimKeysReq {
 #[derive(Deserialize, ToSchema)]
 pub struct AddNimKey {
     key: String,
+    /// Endpoint this key talks to; defaults to the server upstream base_url.
+    #[serde(default)]
+    base_url: Option<String>,
+    /// Anthropic-native endpoint (body pass-through on /v1/messages).
+    #[serde(default)]
+    native: bool,
+    /// Gate the NIM stream_options compatibility patch on this key.
+    #[serde(default = "default_inject_default")]
+    inject: bool,
+    /// `/gN` routing labels; empty = default pool member.
+    #[serde(default)]
+    groups: Vec<String>,
     /// Requests per minute for this key's lane; defaults to 40 (NIM's free
     /// tier).
     rpm: Option<usize>,
@@ -585,6 +621,17 @@ pub struct SetNimKey {
     fingerprint: String,
     enabled: Option<bool>,
     rpm: Option<usize>,
+    /// Endpoint this key talks to. A native key must differ from the
+    /// global upstream base_url (validated on commit).
+    base_url: Option<String>,
+    native: Option<bool>,
+    inject: Option<bool>,
+    /// Gating labels for `/gN` routes.
+    groups: Option<Vec<String>>,
+}
+
+fn default_inject_default() -> bool {
+    true
 }
 
 /// `POST /api/settings/nim-keys` — any role may add keys (owner = caller)
@@ -616,8 +663,17 @@ pub async fn nim_keys(
     let mut cand = guard.clone();
     match (req.add, req.remove, req.set) {
         (Some(add), None, None) => {
-            cand.upstream.nim_keys.push(NimKey {
+            cand.upstream.keys.push(UpKey {
                 key: add.key.trim().to_owned(),
+                base_url: add
+                    .base_url
+                    .unwrap_or_else(|| cand.upstream.base_url.clone())
+                    .trim()
+                    .trim_end_matches('/')
+                    .to_owned(),
+                native: add.native,
+                inject: add.inject,
+                groups: add.groups,
                 owner: username,
                 enabled: true,
                 rpm: add.rpm.unwrap_or(40),
@@ -626,21 +682,21 @@ pub async fn nim_keys(
         (None, Some(fp), None) => {
             let Some(pos) = cand
                 .upstream
-                .nim_keys
+                .keys
                 .iter()
                 .position(|k| fingerprint(&k.key) == fp)
             else {
                 return bad_request("no such key");
             };
-            if !role.is_admin() && cand.upstream.nim_keys[pos].owner != username {
+            if !role.is_admin() && cand.upstream.keys[pos].owner != username {
                 return forbidden("you can only remove your own keys");
             }
-            cand.upstream.nim_keys.remove(pos);
+            cand.upstream.keys.remove(pos);
         }
         (None, None, Some(set)) => {
             let Some(k) = cand
                 .upstream
-                .nim_keys
+                .keys
                 .iter_mut()
                 .find(|k| fingerprint(&k.key) == set.fingerprint)
             else {
@@ -654,6 +710,18 @@ pub async fn nim_keys(
             }
             if let Some(rpm) = set.rpm {
                 k.rpm = rpm;
+            }
+            if let Some(base_url) = set.base_url {
+                k.base_url = base_url.trim().trim_end_matches('/').to_owned();
+            }
+            if let Some(native) = set.native {
+                k.native = native;
+            }
+            if let Some(inject) = set.inject {
+                k.inject = inject;
+            }
+            if let Some(groups) = set.groups {
+                k.groups = groups;
             }
         }
         _ => return bad_request("send exactly one of add / remove / set"),
@@ -1163,7 +1231,7 @@ pub async fn users(
                 return forbidden("the superuser can never be deleted");
             }
             cand.users.retain(|u| u.username != target);
-            cand.upstream.nim_keys.retain(|k| k.owner != target);
+            cand.upstream.keys.retain(|k| k.owner != target);
             cand.client_auth.keys.retain(|c| c.owner != target);
         }
         (None, None, Some(reset), None) => {

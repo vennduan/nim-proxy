@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
-use axum::extract::State;
-use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
+use axum::extract::{Path, State};
+use axum::http::{header, HeaderMap, HeaderName, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use futures_util::StreamExt;
@@ -24,6 +24,7 @@ use crate::observation::{
     observe_buffered, usage_observation_metrics, FinishResult, Observation, ResponseObservations,
     SseObserver, StreamOutcome,
 };
+use crate::pool::LaneFilter;
 use crate::{AppState, Config};
 use serde_json::Value;
 
@@ -151,10 +152,11 @@ async fn reserve_slot(
     heartbeat: Duration,
     deadline: Instant,
     prefer: Option<usize>,
+    filter: crate::pool::LaneFilter,
     mut on_wait: impl FnMut() -> bool,
 ) -> Option<Slot> {
     let queued = Instant::now();
-    let mut rx = state.dispatch.acquire(deadline, prefer);
+    let mut rx = state.dispatch.acquire(deadline, prefer, filter);
     loop {
         tokio::select! {
             slot = &mut rx => {
@@ -481,6 +483,333 @@ fn finalize_sse_observer(
     record_observations(ctx, &observations)
 }
 
+/// Group-scoped surface: `/{group}/v1/…`. The first segment is the
+/// key-group label; everything after is re-mapped to the un-grouped surface
+/// shape, so the pipeline (auth, pacing, retries, bridge, native
+/// pass-through) is identical — only the candidate filter and the lane's
+/// routing attributes differ.
+///
+/// Candidate checks fail fast with a typed 4xx and no queue entry: a label
+/// naming no enabled key on the requested surface ("group_empty"). The
+/// messages surface takes the whole group — native lanes byte-passthrough
+/// the client's Anthropic stream, chat lanes ride the bridge; every other
+/// surface takes the whole group as well; the chat surface alone excludes
+/// native lanes (they expose no OpenAI catalog to serve it).
+pub async fn handle_group(
+    State(state): State<Arc<AppState>>,
+    path_params: Path<(String, String)>,
+
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    // `Path<(String, String)>`: the group label plus the `*path` wildcard
+    // (axum hands over every path parameter; only the label is read —
+    // the tail is re-mapped from `uri`).
+    let Path((group, _tail)) = path_params;
+    // `^[a-z0-9_-]{1,32}$` — the same charset the key `groups` labels
+    // validate against, so a request segment that matches is guaranteed to
+    // be a label owners can actually assign.
+    let valid_group = group
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+        && (1..=32).contains(&group.len());
+    if !valid_group {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            Bytes::from(
+                serde_json::to_vec(&proxy_error_json(
+                    "invalid_route",
+                    format!("invalid group label {group:?}: must match ^[a-z0-9_-]{{1,32}}$"),
+                ))
+                .expect("static shape serializes"),
+            ),
+        );
+    }
+    if state
+        .setup_required
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return crate::auth::setup_required_json();
+    }
+    let cfg = state.cfg();
+    // Re-map to the un-grouped surface shape: `/g1/v1/chat/completions` ->
+    // `/v1/chat/completions`, so labels, bridge, and injection behave
+    // exactly as on the plain /v1 paths.
+    let full = uri
+        .path_and_query()
+        .map(|pq| pq.as_str().to_owned())
+        .unwrap_or_else(|| uri.path().to_owned());
+    // The route pattern `/{group}/v1/{*path}` consumes the literal `v1`,
+    // so re-attach the leading slash: `/g3/v1/models` -> `/v1/models`.
+    let tail = full.strip_prefix(&format!("/{group}/")).unwrap_or(&full);
+    let path_query = format!("/{tail}");
+    let path_only = path_query.split('?').next().unwrap_or("");
+
+    let anthropic_surface = path_only == "/v1/messages";
+    // Bridge payloads ride the chat wire even when the client entered
+    // through the messages surface: a chat lane's completion endpoint is
+    // `/v1/chat/completions`, and `/v1/messages` means nothing to it.
+    // Native lanes never read this — they build their own URL
+    // (`{base}/v1/messages`).
+    let chat_path_query = if anthropic_surface && path_only == "/v1/messages" {
+        "/v1/chat/completions"
+    } else {
+        path_query.as_str()
+    }
+    .to_string();
+    let chat_surface = path_only == "/v1/chat/completions" || path_only == "/v1/completions";
+    let wants_stream = method == Method::POST
+        && (anthropic_surface || chat_surface)
+        && serde_json::from_slice::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v.get("stream").and_then(|s| s.as_bool()))
+            .unwrap_or(false);
+    // Surface split (plan decision 3): native keys serve the chat wire
+    // nowhere — every group surface *except* `/v1/messages` excludes native
+    // lanes (a chat request on an all-native group has no candidate, by
+    // design), so the candidate check below fails fast with a typed 4xx
+    // instead of burning a queue slot. The messages surface takes the
+    // whole group: native lanes byte-passthrough the client's stream,
+    // chat lanes ride the bridge; the catalog probe likewise (a native
+    // endpoint still answers /v1/models with Bearer auth).
+    let models_probe = method == Method::GET && path_only == "/v1/models";
+    let filter = LaneFilter {
+        group: Some(group.clone()),
+        exclude_native: !anthropic_surface || models_probe,
+    };
+    let whole_group = LaneFilter {
+        group: Some(group.clone()),
+        ..Default::default()
+    };
+    let empty_reason: Option<String> = if state.pool().candidates(&filter) == 0 {
+        // Split "the group has no key" from "the group's keys don't serve
+        // this surface": carriers count, so the message can say
+        // "re-enable" when that is the fix.
+        if state.pool().candidates_including_carriers(&whole_group) == 0 {
+            Some(format!(
+                "group {group} has no key; add one tagged {group} or use the un-grouped /v1 surface"
+            ))
+        } else if state.pool().candidates_including_carriers(&filter) == 0 {
+            if models_probe {
+                Some(format!(
+                    "group {group} has no key that exposes a model catalog; add one with native=false"
+                ))
+            } else {
+                Some(format!(
+                    "group {group} has no OpenAI-wire key to serve {path_only}; add one with native=false"
+                ))
+            }
+        } else {
+            Some(format!(
+                "group {group} has no enabled key; re-enable one tagged {group}"
+            ))
+        }
+    } else {
+        None
+    };
+    if let Some(message) = empty_reason {
+        let code = if state.pool().candidates_including_carriers(&whole_group) == 0 {
+            "group_empty"
+        } else if models_probe {
+            "group_no_models"
+        } else {
+            "chat_all_native"
+        };
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            Bytes::from(
+                serde_json::to_vec(&proxy_error_json(code, message))
+                    .expect("static shape serializes"),
+            ),
+        );
+    }
+    let (client, inflight_guard, request_deadline) =
+        match shared_guard(&state, &cfg, &headers, Instant::now()).await {
+            Ok(g) => g,
+            Err(response) => return response,
+        };
+    let parsed = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .filter(|v| v.is_object());
+    let raw_model = parsed
+        .as_ref()
+        .and_then(|v| v.get("model").and_then(|m| m.as_str()))
+        .unwrap_or("none");
+    let ctx = Ctx {
+        client,
+        model: label_model(&state, raw_model),
+        path: label_path(path_only),
+        endpoint: if anthropic_surface {
+            "messages"
+        } else {
+            "chat"
+        },
+        started: Instant::now(),
+    };
+    // The group-scoped catalog probe answers from the same cache but draws
+    // its slot from the group's lanes (native lanes are excluded by the
+    // filter above): a native endpoint has no OpenAI model list.
+    if models_probe {
+        let resp = models(state, cfg, filter).await;
+        record_request(&ctx, resp.status().as_str());
+        return resp;
+    }
+    // The messages surface may grant either wire: a native lane gets the
+    // client's Anthropic bytes byte-exact, a chat lane gets the bridge-
+    // converted payload. Both variants are prepared up front; which one a
+    // granted slot sends is decided at send time by `slot.native`.
+    let (mut chat_body, bridge_post, stream_meta, chat_json, tool_meta) = if anthropic_surface {
+        let anthropic = match &parsed {
+            Some(v) => v.clone(),
+            None => {
+                return json_response(
+                    StatusCode::BAD_REQUEST,
+                    Bytes::from(
+                        serde_json::to_vec(&proxy_error_json(
+                            "invalid_json",
+                            "request body must be a JSON object",
+                        ))
+                        .expect("static body serializes"),
+                    ),
+                );
+            }
+        };
+        let beta = headers
+            .get("anthropic-beta")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let payload = match crate::bridge::to_chat_payload(&anthropic, beta) {
+            Ok(payload) => payload,
+            Err(e) => return bridge_error_response(&e),
+        };
+        let model = payload
+            .json
+            .get("model")
+            .and_then(|m| m.as_str())
+            .unwrap_or(raw_model)
+            .to_owned();
+        let stream_meta = Some(crate::bridge::StreamMeta {
+            client_tool_names: payload
+                .tool_meta
+                .iter()
+                .filter(|m| {
+                    !matches!(
+                        m.family,
+                        crate::bridge::ToolFamily::WebSearch | crate::bridge::ToolFamily::WebFetch
+                    )
+                })
+                .map(|m| m.name.clone())
+                .collect(),
+            model: model.clone(),
+        });
+        (
+            Bytes::from(serde_json::to_vec(&payload.json).expect("chat payload serializes")),
+            Some(BridgePost {
+                model,
+                tool_meta: payload.tool_meta.clone(),
+            }),
+            stream_meta,
+            payload.json,
+            payload.tool_meta.clone(),
+        )
+    } else {
+        (
+            body.clone(),
+            None,
+            None,
+            serde_json::Value::Null,
+            Vec::new(),
+        )
+    };
+    // Request-shape emission, as on the global bridge: the shape family
+    // reads the converted chat body, and tool offers count per entry over
+    // the frozen vocabulary.
+    if anthropic_surface {
+        record_shape(&ctx, Some(&chat_json), wants_stream);
+        for meta in &tool_meta {
+            counter!(
+                "nimproxy_tool_type_total",
+                "type" => tool_type_label(meta.family),
+            )
+            .increment(1);
+        }
+    }
+    // Sticky affinity pins are pool-wide lane indices; `reserve_filtered`
+    // drops a pin that lands on an ineligible lane, so the pool length is
+    // the right modulus (not the filtered candidate count).
+    let prefer = parsed
+        .as_ref()
+        .and_then(|v| affinity(v, state.pool().len()));
+    let wait = wait_deadline(&cfg);
+    // Native grants send the untouched Anthropic bytes; anything else is a
+    // no-op (native lanes are filtered off the non-messages surfaces).
+    let native_raw = anthropic_surface.then(|| body.clone());
+    // Usage injection on the group surface: the NIM-only stream_options
+    // patch applies only when a candidate lane wants it (plan decision 6);
+    // a pure-routing pool sends the client bytes as-is. `fallback` keeps
+    // the untouched body so a 400 after injection retries without it.
+    let mut fallback: Option<Bytes> = None;
+    let injectable = wants_stream
+        && state.pool().any_inject(&filter)
+        && !cfg.strict_passthrough
+        && !state.no_inject.lock().unwrap().contains(&ctx.model);
+    if injectable {
+        let mut v = serde_json::from_slice::<serde_json::Value>(&chat_body)
+            .expect("group chat body parsed");
+        v["stream_options"] = serde_json::json!({ "include_usage": true });
+        fallback = Some(std::mem::replace(
+            &mut chat_body,
+            Bytes::from(serde_json::to_vec(&v).expect("injected payload serializes")),
+        ));
+    }
+    if wants_stream {
+        return streaming(
+            state,
+            cfg,
+            ctx,
+            method,
+            chat_path_query,
+            headers,
+            chat_body,
+            prefer,
+            fallback,
+            filter,
+            native_raw,
+            inflight_guard,
+            request_deadline,
+            wait,
+            stream_meta,
+        );
+    }
+    let work = buffered(
+        state,
+        cfg,
+        ctx,
+        method,
+        chat_path_query,
+        headers,
+        chat_body,
+        prefer,
+        filter,
+        wait,
+        native_raw,
+        bridge_post,
+    );
+    // The in-flight guard lives until the response is built, so a live
+    // request keeps its slot accounted (the streaming path moves it
+    // instead).
+    let _hold = inflight_guard;
+    match request_deadline {
+        Some(dl) => match tokio::time::timeout_at(dl.0.into(), work).await {
+            Ok(response) => response,
+            Err(_) => deadline_exceeded(),
+        },
+        None => work.await,
+    }
+}
+
 fn upstream_request(
     http: &reqwest::Client,
     base_url: &str,
@@ -489,11 +818,49 @@ fn upstream_request(
     headers: &HeaderMap,
     key: &str,
     body: &Bytes,
+    native: bool,
 ) -> reqwest::RequestBuilder {
     let url = format!("{base_url}{path_query}");
+    let mut req = http.request(method.clone(), url);
+    if native {
+        // Anthropic-native endpoint: x-api-key auth (+ version header). The
+        // client's Authorization (the proxy's Bearer) is deliberately NOT
+        // copied: native upstreams reject a foreign Authorization shape.
+        req = req
+            .header(HeaderName::from_static("x-api-key"), format!("{key}"))
+            .header("anthropic-version", "2023-06-01");
+    } else {
+        req = req.header(header::AUTHORIZATION, format!("Bearer {key}"));
+    }
+    for name in [header::CONTENT_TYPE, header::ACCEPT] {
+        if let Some(v) = headers.get(&name) {
+            req = req.header(name, v);
+        }
+    }
+    if !body.is_empty() {
+        req = req.body(body.clone());
+    }
+    req
+}
+
+/// Native-endpoint request builder: the lane's own base + /v1/messages,
+/// `x-api-key` auth, the client's `anthropic-beta` forwarded, and the
+/// proxy Bearer stripped. Body is byte-exact pass-through (T3: zero
+/// conversion for native lanes).
+fn native_upstream_request(
+    http: &reqwest::Client,
+    lane_url: &str,
+    headers: &HeaderMap,
+    key: &str,
+    body: &Bytes,
+) -> reqwest::RequestBuilder {
     let mut req = http
-        .request(method.clone(), url)
-        .header(header::AUTHORIZATION, format!("Bearer {key}"));
+        .post(lane_url)
+        .header(HeaderName::from_static("x-api-key"), format!("{key}"))
+        .header("anthropic-version", "2023-06-01");
+    if let Some(v) = headers.get("anthropic-beta") {
+        req = req.header("anthropic-beta", v);
+    }
     for name in [header::CONTENT_TYPE, header::ACCEPT] {
         if let Some(v) = headers.get(&name) {
             req = req.header(name, v);
@@ -571,6 +938,129 @@ async fn shared_guard(
     }
 }
 
+/// Response-side bridge context: native lanes send the client's Anthropic
+/// bytes untouched; a chat lane's completion is turned into the Anthropic
+/// message (or a non-2xx into the Anthropic error envelope) by `finish` —
+/// the same terminal work the global bridge does.
+struct BridgePost {
+    model: String,
+    tool_meta: Vec<crate::bridge::ToolMeta>,
+}
+
+impl BridgePost {
+    /// `native_grant` is the *granted lane's* native flag, not the request
+    /// surface: on the mixed messages surface a chat grant still gets its
+    /// completion converted, and only a native grant's bytes are already
+    /// Anthropic.
+    async fn finish(&self, resp: Response, ctx: &Ctx, native_grant: bool) -> Response {
+        let status = resp.status();
+        if status.is_success() {
+            let bytes = match axum::body::to_bytes(resp.into_body(), usize::MAX).await {
+                Ok(bytes) => bytes,
+                Err(_) => return bad_gateway(),
+            };
+            if native_grant {
+                // Native grant: the bytes are already Anthropic — no
+                // conversion, no OpenAI-shape observation.
+                record_request(ctx, status.as_str());
+                return json_response(status, bytes);
+            }
+            if let Ok(completion) = serde_json::from_slice::<Value>(&bytes) {
+                // `relay` already harvested the OpenAI observations; the
+                // native grant's bytes are not OpenAI-shaped and get none.
+                let message =
+                    crate::bridge::chat_to_message(&completion, &self.model, &self.tool_meta);
+                return json_response(
+                    status,
+                    Bytes::from(
+                        serde_json::to_vec(&message).expect("Anthropic message serializes"),
+                    ),
+                );
+            }
+            // Unparseable success body: the pipeline settled the request,
+            // so the passthrough contract applies.
+            return json_response(status, bytes);
+        }
+        // Non-2xx into the Anthropic error envelope: same status code,
+        // parseable `{"type":"error","error":{...}}` — and for a native
+        // grant, the native error envelope, byte-identical unless it is
+        // not already parseable as one.
+        let raw = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .ok();
+        if let Some(bytes) = raw {
+            if native_grant {
+                // The native error envelope is already Anthropic-shaped:
+                // same status, byte-identical body.
+                if serde_json::from_slice::<Value>(&bytes).is_ok() {
+                    record_request(ctx, status.as_str());
+                    return json_response(status, bytes);
+                }
+            } else {
+                let detail = serde_json::from_slice::<Value>(&bytes)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("error")
+                            .and_then(|e| e.get("message"))
+                            .or_else(|| v.get("message"))
+                            .or_else(|| v.get("detail"))
+                            .and_then(|m| m.as_str().map(str::to_owned))
+                    })
+                    .unwrap_or_else(|| "upstream request failed".to_owned());
+                let kind = match status.as_u16() {
+                    400 => "invalid_request_error",
+                    401 | 403 => "authentication_error",
+                    404 => "not_found_error",
+                    429 => "rate_limit_error",
+                    500 => "api_error",
+                    503 => "overloaded_error",
+                    504 => "timeout_error",
+                    _ => "api_error",
+                };
+                record_request(ctx, status.as_str());
+                return json_response(
+                    status,
+                    Bytes::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "type": "error",
+                            "error": { "type": kind, "message": detail }
+                        }))
+                        .expect("static shape serializes"),
+                    ),
+                );
+            }
+        }
+        record_request(ctx, status.as_str());
+        bad_gateway()
+    }
+}
+
+/// A bridge conversion failure: the Anthropic `error` envelope with the
+/// conversion's own code, mirroring the global bridge's rejections.
+fn bridge_error_response(e: &crate::bridge::BridgeError) -> Response {
+    if e.code == "server_tools_unsupported" {
+        counter!(
+            "nimproxy_tool_type_total",
+            "type" => "server_rejected",
+        )
+        .increment(1);
+    }
+    json_response(
+        StatusCode::BAD_REQUEST,
+        Bytes::from(
+            serde_json::to_vec(&serde_json::json!({
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "code": e.code,
+                    "message": e.message
+                }
+            }))
+            .expect("static shape serializes"),
+        ),
+    )
+}
+
 /// Single entry point for every /v1/* call.
 pub async fn handle(
     State(state): State<Arc<AppState>>,
@@ -620,8 +1110,14 @@ pub async fn handle(
     // Answer the model-catalog probe from cache: harnesses poll it and it
     // shouldn't burn rate-limit budget on every poll.
     if method == Method::GET && uri.path() == "/v1/models" {
+        let default_filter = LaneFilter::default();
         if let Some(deadline) = request_deadline {
-            return match tokio::time::timeout_at(deadline.0.into(), models(state, cfg)).await {
+            return match tokio::time::timeout_at(
+                deadline.0.into(),
+                models(state, cfg, default_filter),
+            )
+            .await
+            {
                 Ok(resp) => {
                     record_request(&ctx, resp.status().as_str());
                     resp
@@ -632,7 +1128,7 @@ pub async fn handle(
                 }
             };
         }
-        let resp = models(state, cfg).await;
+        let resp = models(state, cfg, LaneFilter::default()).await;
         record_request(&ctx, resp.status().as_str());
         return resp;
     }
@@ -655,7 +1151,15 @@ pub async fn handle(
     // keeps the untouched body for a one-shot retry if the model rejects it.
     let mut body = body;
     let mut fallback = None;
-    if wants_stream && !cfg.strict_passthrough && uri.path() == "/v1/chat/completions" {
+    // `inject` is a per-key NIM compatibility patch (plan T3): ask upstreams
+    // for exact token usage only when some candidate lane wants the patch;
+    // a pure-routing pool (every lane `inject: false`) gets the client's
+    // bytes untouched.
+    if wants_stream
+        && !cfg.strict_passthrough
+        && uri.path() == "/v1/chat/completions"
+        && state.pool().any_inject(&LaneFilter::default())
+    {
         let injectable = parsed
             .as_ref()
             .is_some_and(|v| v.is_object() && v.get("stream_options").is_none())
@@ -685,6 +1189,8 @@ pub async fn handle(
             body,
             prefer,
             fallback,
+            LaneFilter::default(),
+            None,
             inflight_guard,
             request_deadline,
             wait_deadline,
@@ -693,6 +1199,7 @@ pub async fn handle(
     } else {
         let wait_deadline = wait_deadline(&cfg);
         let deadline_ctx = ctx.clone();
+        let default_filter = LaneFilter::default();
         let work = buffered(
             state,
             cfg,
@@ -702,7 +1209,10 @@ pub async fn handle(
             headers,
             body,
             prefer,
+            default_filter,
             wait_deadline,
+            None,
+            None,
         );
         if let Some(deadline) = request_deadline {
             match tokio::time::timeout_at(deadline.0.into(), work).await {
@@ -855,7 +1365,7 @@ pub async fn handle_messages(
     // keeps the untouched body for a one-shot retry if the model rejects it.
     let mut body = Bytes::from(serde_json::to_vec(&chat).expect("chat payload serializes"));
     let mut fallback: Option<Bytes> = None;
-    if wants_stream && !cfg.strict_passthrough {
+    if wants_stream && !cfg.strict_passthrough && state.pool().any_inject(&LaneFilter::default()) {
         let injectable = !state.no_inject.lock().unwrap().contains(&ctx.model);
         if injectable {
             let mut v = chat;
@@ -884,6 +1394,8 @@ pub async fn handle_messages(
             body,
             prefer,
             fallback,
+            LaneFilter::default(),
+            None,
             inflight_guard,
             request_deadline,
             wait_deadline(&cfg),
@@ -913,6 +1425,7 @@ pub async fn handle_messages(
         .await;
     }
 
+    let default_filter = LaneFilter::default();
     let work = buffered(
         state,
         cfg.clone(),
@@ -922,7 +1435,10 @@ pub async fn handle_messages(
         headers,
         body,
         prefer,
+        default_filter,
         wait_deadline(&cfg),
+        None,
+        None,
     );
     let response = match request_deadline {
         Some(deadline) => match tokio::time::timeout_at(deadline.0.into(), work).await {
@@ -1061,6 +1577,7 @@ async fn web_search_executor(
         let mut chat_json = payload.json.clone();
         chat_json["messages"] = Value::Array(messages.clone());
         let body = Bytes::from(serde_json::to_vec(&chat_json).expect("chat payload serializes"));
+        let default_filter = LaneFilter::default();
         let work = buffered(
             state.clone(),
             cfg.clone(),
@@ -1070,7 +1587,10 @@ async fn web_search_executor(
             headers.clone(),
             body,
             None,
+            default_filter,
             wait_deadline(cfg),
+            None,
+            None,
         );
         let response = match request_deadline {
             Some(deadline) => match tokio::time::timeout_at(deadline.0.into(), work).await {
@@ -1266,7 +1786,10 @@ async fn buffered(
     headers: HeaderMap,
     body: Bytes,
     prefer: Option<usize>,
+    filter: LaneFilter,
     deadline: Instant,
+    native_raw: Option<Bytes>,
+    bridge_post: Option<BridgePost>,
 ) -> Response {
     let _active = crate::dispatch::scopeguard(|| gauge!("nimproxy_active_requests").decrement(1.0));
     gauge!("nimproxy_active_requests").increment(1.0);
@@ -1278,7 +1801,15 @@ async fn buffered(
             record_request(&ctx, "504");
             return gateway_timeout(&cfg, state.pool().len());
         };
-        let Some(slot) = reserve_slot(&state, cfg.heartbeat, deadline, prefer, || true).await
+        let Some(slot) = reserve_slot(
+            &state,
+            cfg.heartbeat,
+            deadline,
+            prefer,
+            filter.clone(),
+            || true,
+        )
+        .await
         else {
             record_request(&ctx, "504");
             return gateway_timeout(&cfg, state.pool().len());
@@ -1286,19 +1817,37 @@ async fn buffered(
         let sent_at = Instant::now();
         // A non-streaming request gets an overall timeout so a stalled body read
         // can't pin an in-flight slot forever (streaming has no such cap).
-        let resp = match upstream_request(
-            &state.http,
-            &cfg.base_url,
-            &method,
-            &path_query,
-            &headers,
-            &slot.key,
-            &body,
-        )
-        .timeout(cfg.request_timeout)
-        .send()
-        .await
-        {
+        let resp = match if slot.native && native_raw.is_some() {
+            // Native grant: send the client's Anthropic bytes byte-exact
+            // against the lane's own /v1/messages; `body` holds the
+            // bridge-converted payload for the chat lanes.
+            native_upstream_request(
+                &state.http,
+                &format!("{}/v1/messages", slot.base_url),
+                &headers,
+                &slot.key,
+                native_raw
+                    .as_ref()
+                    .expect("native branch implies native_raw"),
+            )
+            .timeout(cfg.request_timeout)
+            .send()
+            .await
+        } else {
+            upstream_request(
+                &state.http,
+                &slot.base_url,
+                &method,
+                &path_query,
+                &headers,
+                &slot.key,
+                &body,
+                slot.native,
+            )
+            .timeout(cfg.request_timeout)
+            .send()
+            .await
+        } {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(lane = slot.lane, error = %e, "upstream connection error, retrying");
@@ -1313,7 +1862,9 @@ async fn buffered(
             // across every key), so cooling down the lane would just burn healthy
             // key capacity on a failover that cannot help.
             let detail = resp.text().await.unwrap_or_default();
-            if governor::is_worker_exhausted(&detail) {
+            // The exhaustion signature is NIM-specific; only an NIM lane
+            // (`inject`) recognizes it (plan decision 6).
+            if slot.inject && governor::is_worker_exhausted(&detail) {
                 state
                     .governor
                     .note_exhausted(&ctx.model, cfg.governor.overrides.get(&ctx.model).copied());
@@ -1325,8 +1876,17 @@ async fn buffered(
         }
         histogram!("nimproxy_upstream_seconds", "model" => ctx.model.clone())
             .record(sent_at.elapsed().as_secs_f64());
-        record_request(&ctx, resp.status().as_str());
-        return relay(resp, &ctx).await;
+        if bridge_post.is_none() {
+            record_request(&ctx, resp.status().as_str());
+        }
+        let resp = relay(resp, &ctx).await;
+        if let Some(bridge_post) = &bridge_post {
+            // The group bridge owns the terminal work (conversion + its own
+            // request/observation recording); relay must skip both. The
+            // grant's own native flag decides which wire the bytes are on.
+            return bridge_post.finish(resp, &ctx, slot.native).await;
+        }
+        return resp;
     }
 }
 
@@ -1346,6 +1906,8 @@ fn streaming(
     mut body: Bytes,
     prefer: Option<usize>,
     mut fallback: Option<Bytes>,
+    filter: LaneFilter,
+    native_raw: Option<Bytes>,
     inflight_guard: impl Send + 'static,
     request_deadline: Option<RequestDeadline>,
     deadline: Instant,
@@ -1358,7 +1920,6 @@ fn streaming(
         std::sync::Arc::new(std::sync::Mutex::new(
             anthropic_sse.map(crate::bridge::StreamTranslator::with_meta),
         ));
-
     tokio::spawn(async move {
         // Holds the handler's in-flight slot until this task — the request's
         // real lifetime — exits, so max_inflight bounds live streams too.
@@ -1371,6 +1932,10 @@ fn streaming(
         let tr = translator.clone();
         let observer = Arc::new(Mutex::new(None));
         let deadline_observer = observer.clone();
+        // A native grant whose stream carries no content (the NIM
+        // empty-output shape) earns one retry on a chat lane, if the pool
+        // offers both: the filter flips after the round, not before.
+        let mut native_empty_fallback: Option<LaneFilter> = None;
         let work = async move {
             let send = |b: &'static str| {
                 let tx = tx.clone();
@@ -1413,9 +1978,15 @@ fn streaming(
                         .await;
                     return;
                 };
-                let slot = reserve_slot(&state, cfg.heartbeat, deadline, prefer, || {
-                    send_control_frame(&tx, &tr)
-                })
+                let active_filter = native_empty_fallback.as_ref().unwrap_or(&filter);
+                let slot = reserve_slot(
+                    &state,
+                    cfg.heartbeat,
+                    deadline,
+                    prefer,
+                    active_filter.clone(),
+                    || send_control_frame(&tx, &tr),
+                )
                 .await;
                 let Some(slot) = slot else {
                     record_request(&ctx, "504");
@@ -1427,19 +1998,38 @@ fn streaming(
                     return;
                 };
 
+                // A native grant streams Anthropic events byte-exact; the
+                // translator (if one was built for a chat round) is set
+                // aside for that round only.
+                let native_round = slot.native && native_raw.is_some();
                 let sent_at = Instant::now();
-                let resp = match upstream_request(
-                    &state.http,
-                    &cfg.base_url,
-                    &method,
-                    &path_query,
-                    &headers,
-                    &slot.key,
-                    &body,
-                )
-                .send()
-                .await
-                {
+                let resp = match if slot.native && native_raw.is_some() {
+                    // Native grant on the mixed messages surface: send the
+                    // client's Anthropic bytes byte-exact (zero conversion);
+                    // `body` is the bridge-converted payload.
+                    native_upstream_request(
+                        &state.http,
+                        &format!("{}/v1/messages", slot.base_url),
+                        &headers,
+                        &slot.key,
+                        native_raw.as_ref().unwrap(),
+                    )
+                    .send()
+                    .await
+                } else {
+                    upstream_request(
+                        &state.http,
+                        &slot.base_url,
+                        &method,
+                        &path_query,
+                        &headers,
+                        &slot.key,
+                        &body,
+                        slot.native,
+                    )
+                    .send()
+                    .await
+                } {
                     Ok(r) => r,
                     Err(e) => {
                         tracing::warn!(lane = slot.lane, error = %e, "upstream connection error, retrying");
@@ -1470,7 +2060,9 @@ fn streaming(
                     // Worker exhaustion is model-scoped: back off the model via
                     // the governor, never the lane (see `buffered`).
                     let detail = resp.text().await.unwrap_or_default();
-                    if governor::is_worker_exhausted(&detail) {
+                    // NIM-specific signature: only NIM lanes (`inject`)
+                    // feed it to the governor (plan decision 6).
+                    if slot.inject && governor::is_worker_exhausted(&detail) {
                         state.governor.note_exhausted(
                             &ctx.model,
                             cfg.governor.overrides.get(&ctx.model).copied(),
@@ -1505,6 +2097,7 @@ fn streaming(
 
                 *observer.lock().unwrap() = Some(SseObserver::default());
                 let mut first_chunk: Option<Instant> = None;
+                let mut saw_native_content = false;
                 let mut chunks = resp.bytes_stream();
                 loop {
                     // Two ways out of a blocked upstream read: the stall cutoff
@@ -1546,21 +2139,33 @@ fn streaming(
                     let Some(chunk) = next else { break };
                     match chunk {
                         Ok(b) => {
+                            if native_round && !b.trim_ascii().is_empty() {
+                                saw_native_content = true;
+                            }
                             if first_chunk.is_none() {
                                 first_chunk = Some(Instant::now());
                                 histogram!("nimproxy_ttft_seconds", "model" => ctx.model.clone())
                                     .record(sent_at.elapsed().as_secs_f64());
                             }
-                            observer
-                                .lock()
-                                .unwrap()
-                                .as_mut()
-                                .expect("stream observer initialized")
-                                .push(&b);
+                            if !native_round {
+                                // The OpenAI observer only understands chat
+                                // chunks; a native round's Anthropic events
+                                // stay out of it (T3).
+                                observer
+                                    .lock()
+                                    .unwrap()
+                                    .as_mut()
+                                    .expect("stream observer initialized")
+                                    .push(&b);
+                            }
                             // T6: bridge streams hand the client Anthropic
                             // events, never raw upstream chunks; the chat
-                            // path forwards the chunk untouched.
-                            let frames = {
+                            // path forwards the chunk untouched. A native
+                            // round bypasses the translator entirely: the
+                            // upstream bytes are already Anthropic events.
+                            let frames = if native_round {
+                                vec![b]
+                            } else {
                                 let mut guard = tr.lock().unwrap();
                                 match guard.as_mut() {
                                     Some(t) => t.push(&b),
@@ -1597,18 +2202,37 @@ fn streaming(
 
                 // T6: close the Anthropic stream (message_delta +
                 // message_stop); an uncommitted stream replays its retained
-                // upstream bytes instead — the passthrough contract.
-                let tail = tr
-                    .lock()
-                    .unwrap()
-                    .as_mut()
-                    .map_or(Vec::new(), |t| t.finish());
+                // upstream bytes instead — the passthrough contract. A native
+                // round sent its bytes raw, so the translator saw nothing
+                // and neither do we: no tail events.
+                let tail = if native_round {
+                    Vec::new()
+                } else {
+                    tr.lock()
+                        .unwrap()
+                        .as_mut()
+                        .map_or(Vec::new(), |t| t.finish())
+                };
                 for frame in tail {
                     if tx.send(Ok(frame)).await.is_err() {
                         finalize_sse_observer(&ctx, &observer, StreamOutcome::Disconnected);
                         record_request(&ctx, "disconnect");
                         return;
                     }
+                }
+                if native_round && !saw_native_content && native_empty_fallback.is_none() {
+                    // One retry on a chat lane: flip the candidate set and
+                    // run the whole pacing round again in this stream.
+                    tracing::info!(
+                        lane = slot.lane,
+                        "native stream carried no content; falling back to a chat lane"
+                    );
+                    native_empty_fallback = Some(LaneFilter {
+                        group: filter.group.clone(),
+                        exclude_native: true,
+                        ..Default::default()
+                    });
+                    continue;
                 }
                 let completion = finalize_sse_observer(&ctx, &observer, StreamOutcome::Completed);
                 if let (Some(first), Some((c, source))) = (first_chunk, completion) {
@@ -1658,7 +2282,7 @@ fn streaming(
 /// /v1/models, cached so harness catalog polls cost zero rate budget. The
 /// lock is held across the refresh so concurrent misses make one upstream
 /// call (followers see the fresh cache when they get the lock).
-async fn models(state: Arc<AppState>, cfg: Arc<Config>) -> Response {
+async fn models(state: Arc<AppState>, cfg: Arc<Config>, filter: LaneFilter) -> Response {
     let mut cache = state.models_cache.lock().await;
     if let Some((at, body)) = cache.as_ref() {
         if at.elapsed() < cfg.models_ttl {
@@ -1666,10 +2290,11 @@ async fn models(state: Arc<AppState>, cfg: Arc<Config>) -> Response {
         }
     }
     let deadline = Instant::now() + Duration::from_secs(30);
-    let Some(slot) = reserve_slot(&state, cfg.heartbeat, deadline, None, || true).await else {
+    let Some(slot) = reserve_slot(&state, cfg.heartbeat, deadline, None, filter, || true).await
+    else {
         return gateway_timeout(&cfg, state.pool().len());
     };
-    match fetch_models(&state.http, &cfg.base_url, &slot.key).await {
+    match fetch_models(&state.http, &slot.base_url, &slot.key).await {
         Ok(resp) if resp.status().is_success() => {
             let body = resp.bytes().await.unwrap_or_default();
             *cache = Some((Instant::now(), body.clone()));

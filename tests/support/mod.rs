@@ -169,7 +169,7 @@ async fn mock_search_handler(
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Hit {
     pub key: String,
     pub body: serde_json::Value,
@@ -222,6 +222,111 @@ pub async fn start_mock() -> MockNim {
         axum::serve(listener, app).await.unwrap();
     });
     MockNim { url, state }
+}
+
+/// One recorded native-endpoint hit: raw body bytes plus the auth headers
+/// the proxy sent, for byte-diff assertions.
+#[derive(Clone, Debug)]
+pub struct NativeHit {
+    pub x_api_key: Option<String>,
+    pub authorization: Option<String>,
+    pub version: Option<String>,
+    pub body: Bytes,
+}
+
+#[derive(Default)]
+pub struct MockNativeState {
+    pub hits: Mutex<Vec<NativeHit>>,
+}
+
+impl MockNativeState {
+    pub fn hit_count(&self) -> usize {
+        self.hits.lock().unwrap().len()
+    }
+}
+
+pub struct MockNative {
+    pub url: String,
+    pub state: Arc<MockNativeState>,
+}
+
+/// A scriptable Anthropic-native endpoint: records raw request bytes,
+/// answers `/v1/messages` with Anthropic-shaped JSON or SSE. `model:
+/// "mock/empty"` streams a content-less stream (for the native-empty
+/// fallback).
+pub async fn start_native_mock() -> MockNative {
+    let state = Arc::new(MockNativeState::default());
+    let app = Router::new()
+        .route("/v1/messages", post(mock_native_messages))
+        .with_state(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    MockNative { url, state }
+}
+
+fn header_str(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+}
+
+async fn mock_native_messages(
+    State(state): State<Arc<MockNativeState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+    state.hits.lock().unwrap().push(NativeHit {
+        x_api_key: header_str(&headers, "x-api-key"),
+        authorization: header_str(&headers, "authorization"),
+        version: header_str(&headers, "anthropic-version"),
+        body,
+    });
+    let stream = parsed["stream"].as_bool().unwrap_or(false);
+    if parsed["model"].as_str() == Some("mock/empty") {
+        // Headers + an immediately closed body: the stream carries no
+        // content at all, so the proxy must fall back to a chat lane.
+        return sse(Body::from_stream(futures_util::stream::empty::<
+            Result<Bytes, std::io::Error>,
+        >()));
+    }
+    if stream {
+        let event = |payload: serde_json::Value| {
+            Bytes::from(format!(
+                "data: {}
+
+",
+                serde_json::to_string(&payload).unwrap()
+            ))
+        };
+        let chunks = [
+            event(
+                serde_json::json!({"type": "message_start", "message": {"id": "msg_mock", "role": "assistant", "model": "mock/model-a"}}),
+            ),
+            event(
+                serde_json::json!({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "hi from native"}}),
+            ),
+            event(serde_json::json!({"type": "message_stop"})),
+        ];
+        return sse(Body::from_stream(futures_util::stream::iter(
+            chunks.map(|c| Ok::<_, std::io::Error>(c)),
+        )));
+    }
+    axum::Json(serde_json::json!({
+        "id": "msg_mock",
+        "type": "message",
+        "role": "assistant",
+        "model": "mock/model-a",
+        "content": [{"type": "text", "text": "hi from native"}],
+        "stop_reason": "end_turn",
+        "stop_sequence": null,
+        "usage": {"input_tokens": 4, "output_tokens": 2}
+    }))
+    .into_response()
 }
 
 async fn mock_models(State(state): State<Arc<MockState>>) -> Response {
@@ -494,9 +599,23 @@ pub fn sha256_hex(s: &str) -> String {
 
 /// A config-store fixture. Defaults mirror the old test posture: open /v1,
 /// three NIM keys at 40 rpm, short waits, 1s heartbeat.
+/// One flat pool key (T3): written verbatim into `upstream.keys`.
+#[derive(Clone, Debug)]
+pub struct FlatKey {
+    pub key: String,
+    pub base_url: String,
+    pub native: bool,
+    pub inject: bool,
+    pub groups: Vec<String>,
+    pub rpm: usize,
+}
+
 pub struct StoreOpts {
     /// Open /v1 (no client keys needed). False = keyed mode.
     pub open: bool,
+    /// Flat per-key pool (T3). When set, entries are written to
+    /// `upstream.keys` and the legacy `nim_keys` block is omitted.
+    pub flat_keys: Vec<FlatKey>,
     /// (name, plaintext secret) client keys; stored as SHA-256 digests.
     pub clients: Vec<(String, String)>,
     /// (key, rpm) NIM keys, all enabled and owned by TEST_USER.
@@ -542,6 +661,7 @@ impl Default for StoreOpts {
             web_search_max_results: None,
             web_search_timeout_secs: None,
             web_search_format: None,
+            flat_keys: Vec::new(),
         }
     }
 }
@@ -556,14 +676,26 @@ impl StoreOpts {
                 "username": name, "password_hash": TEST_HASH, "role": role
             }));
         }
-        let mut store = serde_json::json!({
-            "version": 1,
-            "upstream": {
+        let upstream_block = if self.flat_keys.is_empty() {
+            serde_json::json!({
                 "base_url": upstream,
                 "nim_keys": self.nim_keys.iter().map(|(k, rpm)| serde_json::json!({
                     "key": k, "owner": TEST_USER, "enabled": true, "rpm": rpm
                 })).collect::<Vec<_>>(),
-            },
+            })
+        } else {
+            serde_json::json!({
+                "base_url": upstream,
+                "keys": self.flat_keys.iter().map(|k| serde_json::json!({
+                    "key": k.key, "base_url": k.base_url, "native": k.native,
+                    "inject": k.inject, "groups": k.groups, "owner": TEST_USER,
+                    "enabled": true, "rpm": k.rpm
+                })).collect::<Vec<_>>(),
+            })
+        };
+        let mut store = serde_json::json!({
+            "version": 1,
+            "upstream": upstream_block,
             "client_auth": {
                 "mode": if self.open { "open" } else { "keyed" },
                 "keys": self.clients.iter().map(|(name, secret)| serde_json::json!({
@@ -618,9 +750,17 @@ impl Proxy {
 
     /// Kill -TERM; returns the exit status.
     pub fn terminate(mut self) -> std::process::ExitStatus {
-        let _ = std::process::Command::new("kill")
-            .args(["-TERM", &self.child.id().to_string()])
-            .status();
+        // Windows has no SIGTERM handler (the proxy waits on ctrl_c only),
+        // so a direct kill is the stop signal there; SIGTERM is graceful
+        // on unix.
+        #[cfg(unix)]
+        {
+            let _ = std::process::Command::new("kill")
+                .args(["-TERM", &self.child.id().to_string()])
+                .status();
+        }
+        #[cfg(windows)]
+        let _ = self.child.kill();
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             if let Ok(Some(status)) = self.child.try_wait() {
@@ -628,7 +768,7 @@ impl Proxy {
             }
             assert!(
                 Instant::now() < deadline,
-                "proxy did not exit after SIGTERM"
+                "proxy did not exit after the stop signal"
             );
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -742,8 +882,14 @@ async fn spawn_and_wait_healthy(data_dir: std::path::PathBuf, envs: &[(&str, &st
 
 fn base_cmd(port: u16, data_dir: &std::path::Path) -> std::process::Command {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_nim-proxy"));
-    cmd.env_clear()
-        .current_dir(std::env::temp_dir()) // dodge any local .env
+    // Windows: a fully cleared environment makes the first TCP socket fail
+    // ("无法加载或初始化请求的服务提供程序") — keep the shell environment
+    // and only shadow the vars the store/env contract defines. The
+    // temp-dir cwd dodges any local .env file.
+    cmd.current_dir(std::env::temp_dir())
+        .env_remove("DATA_DIR")
+        .env_remove("PORT")
+        .env_remove("RUST_LOG")
         .env("PORT", port.to_string())
         .env("DATA_DIR", data_dir)
         .env("RUST_LOG", "nim_proxy=warn")
