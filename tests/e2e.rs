@@ -7,6 +7,7 @@
 mod support;
 
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -16,8 +17,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use support::{
     chat_body, complete_setup, expect_refuses_to_start, login, login_as, metrics, read_sse,
-    restart, scratch_data_dir, start_mock, start_proxy, start_proxy_fresh, start_proxy_in,
-    start_proxy_with, start_search_mock, Behavior, SearchBehavior, StoreOpts, TEST_PASSWORD,
+    restart, scratch_data_dir, start_mock, start_native_mock, start_proxy, start_proxy_fresh,
+    start_proxy_in, start_proxy_with, start_search_mock, Behavior, FlatKey, SearchBehavior,
+    StoreOpts, TEST_PASSWORD,
 };
 
 fn client() -> reqwest::Client {
@@ -4855,7 +4857,10 @@ async fn sigterm_shuts_down_cleanly() {
     let mock = start_mock().await;
     let proxy = start_proxy(&mock.url, &[]).await;
     let status = proxy.terminate();
+    #[cfg(unix)]
     assert!(status.success(), "clean exit on SIGTERM, got {status:?}");
+    #[cfg(windows)]
+    let _ = status;
 }
 
 #[tokio::test]
@@ -5363,8 +5368,15 @@ async fn legacy_history_is_warned_once_without_parsing_or_mutating_it() {
         .local_addr()
         .unwrap()
         .port();
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_nim-proxy"))
-        .env_clear()
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_nim-proxy"));
+    // Windows: a cleared environment makes the proxy child's first TCP
+    // socket fail (WSP needs the shell environment), so isolate only where
+    // the clearing works.
+    #[cfg(not(windows))]
+    {
+        *cmd = std::mem::take(cmd).env_clear();
+    }
+    let mut child = cmd
         .current_dir(std::env::temp_dir())
         .env("PORT", port.to_string())
         .env("DATA_DIR", &data_dir)
@@ -5417,8 +5429,15 @@ async fn stale_canonical_temporaries_are_counted_once_without_inspection_or_dele
         .local_addr()
         .unwrap()
         .port();
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_nim-proxy"))
-        .env_clear()
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_nim-proxy"));
+    // Windows: a cleared environment makes the proxy child's first TCP
+    // socket fail (WSP needs the shell environment), so isolate only where
+    // the clearing works.
+    #[cfg(not(windows))]
+    {
+        *cmd = std::mem::take(cmd).env_clear();
+    }
+    let mut child = cmd
         .current_dir(std::env::temp_dir())
         .env("PORT", port.to_string())
         .env("DATA_DIR", &data_dir)
@@ -5530,13 +5549,16 @@ async fn setup_wizard_claims_the_proxy() {
     )
     .await;
 
-    // Credentials file is owner-only.
-    let mode = std::fs::metadata(proxy.data_dir.join("config.json"))
-        .unwrap()
-        .permissions()
-        .mode()
-        & 0o777;
-    assert_eq!(mode, 0o600, "config store must be 0600");
+    // Credentials file is owner-only (unix mode bits).
+    #[cfg(unix)]
+    {
+        let mode = std::fs::metadata(proxy.data_dir.join("config.json"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "config store must be 0600");
+    }
 
     #[cfg(unix)]
     {
@@ -6968,6 +6990,26 @@ async fn locale_preferences_are_fail_closed() {
     let mut failures = Vec::new();
     let mut rejection_byte_checks = 0;
 
+    // The fixture boots in the legacy `nim_keys` shape; the T1 migration
+    // rewrites it to flat `keys` on the first save. Trigger that commit
+    // once up front so every byte-diff below compares one stable shape.
+    let (status, content_type, body) = locale_post(
+        &proxy,
+        Some(superuser.as_str()),
+        "/api/settings/locale",
+        &serde_json::json!({"locale": "EN-us"}),
+    )
+    .await;
+    record_locale_response(
+        &mut failures,
+        "migration-shape-stabilizer",
+        status,
+        content_type.as_deref(),
+        &body,
+        reqwest::StatusCode::OK,
+        None,
+    );
+
     // GET /api/config is real server output, not a test-side Rust-wire copy.
     let (super_status, super_body) = locale_config_body(&proxy, &superuser).await;
     if super_status != 200 {
@@ -8115,6 +8157,9 @@ async fn combined_server_save_flushes_models_cache_only_for_upstream_change() {
     )
     .await;
     assert_eq!(status, 200, "{v}");
+    // The save flushes the catalog cache (an upstream change), but the
+    // lanes keep their key-owned base_urls (T1/T2): the refetch goes back
+    // to A, not to the document's new global base_url.
     client()
         .get(proxy.url("/v1/models"))
         .send()
@@ -8123,12 +8168,20 @@ async fn combined_server_save_flushes_models_cache_only_for_upstream_change() {
         .error_for_status()
         .unwrap();
     assert_eq!(
+        mock_a
+            .state
+            .models_hits
+            .load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "the flushed catalog refetches from the key-owned URL, not the stale cache"
+    );
+    assert_eq!(
         mock_b
             .state
             .models_hits
             .load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "catalog refetches from the new upstream, not the stale cache"
+        0,
+        "a global base_url change does not re-point the lanes (per-key URLs own the pool)"
     );
 
     let (status, v) = post_json(
@@ -8156,12 +8209,19 @@ async fn combined_server_save_flushes_models_cache_only_for_upstream_change() {
         .error_for_status()
         .unwrap();
     assert_eq!(
+        mock_a
+            .state
+            .models_hits
+            .load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "limits-only combined save preserves the upstream-owned catalog cache"
+    );
+    assert_eq!(
         mock_b
             .state
             .models_hits
             .load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "limits-only combined save preserves the upstream-owned catalog cache"
+        0
     );
 }
 
@@ -8565,6 +8625,10 @@ async fn history_settings_reflect_in_api_config() {
 
 /// The Server form changes the upstream and every limit in one transaction:
 /// neither half may publish when the other half is invalid.
+#[cfg_attr(
+    windows,
+    ignore = "the live-data-dir rename trick needs POSIX semantics; covered by the unix CI runners"
+)]
 #[tokio::test]
 async fn server_settings_save_is_atomic() {
     let mock = start_mock().await;
@@ -9782,4 +9846,310 @@ async fn messages_web_search_max_uses_stops_provider_calls() {
         message["usage"]["server_tool_use"]["web_search_requests"], 1,
         "the capped rounds made no provider requests: {message}"
     );
+}
+
+// ---------- T3: group routing (/gN/v1/...) + native pass-through ----------
+
+fn t3_keys(chat: &support::MockNim, native: &support::MockNative) -> Vec<FlatKey> {
+    vec![
+        FlatKey {
+            key: "chat-nim-key".into(),
+            base_url: chat.url.clone(),
+            native: false,
+            inject: true,
+            groups: vec!["g1".into(), "g2".into()],
+            rpm: 40,
+        },
+        FlatKey {
+            key: "native-key".into(),
+            base_url: native.url.clone(),
+            native: true,
+            inject: false,
+            groups: vec!["g2".into(), "g3".into()],
+            rpm: 40,
+        },
+        FlatKey {
+            key: "chat-pure-key".into(),
+            base_url: chat.url.clone(),
+            native: false,
+            inject: false,
+            groups: vec!["g1".into()],
+            rpm: 40,
+        },
+    ]
+}
+
+async fn t3_proxy(chat: &support::MockNim, native: &support::MockNative) -> support::Proxy {
+    support::start_proxy_with(
+        &chat.url,
+        StoreOpts {
+            flat_keys: t3_keys(chat, native),
+            ..Default::default()
+        },
+        &[],
+    )
+    .await
+}
+
+#[tokio::test]
+async fn group_routes_split_by_label_and_native_bytes_pass_through() {
+    let chat = start_mock().await;
+    let native = start_native_mock().await;
+    let proxy = t3_proxy(&chat, &native).await;
+    let c = client();
+    // g1 = {chat-nim, chat-pure}: both labels must be the only lanes that
+    // ever see this request.
+    let resp = c
+        .post(proxy.url("/g1/v1/chat/completions"))
+        .json(&chat_body("g1 convo", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "g1 chat must succeed");
+    resp.bytes().await.unwrap();
+    {
+        let hits = chat.state.hits.lock().unwrap();
+        assert_eq!(hits.len(), 1, "g1 must not touch other lanes");
+        let g1_keys: Vec<&str> = vec!["chat-nim-key", "chat-pure-key"];
+        assert!(
+            g1_keys.contains(&hits[0].key.as_str()),
+            "g1 routed off-label: {:?}",
+            hits[0].key
+        );
+    }
+    // g2 = {chat-nim, native}: a stream chat request must land on the
+    // chat-nim lane (native is excluded from the chat surface), with
+    // stream_options injected because that lane wants it.
+    let resp = c
+        .post(proxy.url("/g2/v1/chat/completions"))
+        .json(&chat_body("g2 convo", true))
+        .send()
+        .await
+        .unwrap();
+    read_sse(resp).await;
+    {
+        let hits = chat.state.hits.lock().unwrap();
+        assert_eq!(hits.len(), 2, "g2 chat took exactly one new hit");
+        assert_eq!(
+            hits[1].key, "chat-nim-key",
+            "g2 chat must skip native lanes"
+        );
+        assert_eq!(
+            hits[1].body["stream_options"]["include_usage"], true,
+            "g2 chat-nim lane is inject=true, so injection happens"
+        );
+    }
+    // g2 messages (buffered): native lanes are eligible on the messages
+    // surface, so either wire can serve; both outcomes are correct and both
+    // must be shaped correctly.
+    let anthropic = serde_json::json!({
+        "model": "mock/model-a",
+        "max_tokens": 8,
+        "messages": [{"role": "user", "content": "g2 buffered"}]
+    });
+    let anthropic_bytes = serde_json::to_vec(&anthropic).unwrap();
+    let resp = c
+        .post(proxy.url("/g2/v1/messages"))
+        .header("content-type", "application/json")
+        .body(anthropic_bytes.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "g2 messages (buffered)");
+    let resp_json: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        resp_json["type"], "message",
+        "Anthropic envelope came back: {resp_json}"
+    );
+    let native_hits = native.state.hits.lock().unwrap().clone();
+    let chat_hits = chat.state.hits.lock().unwrap().clone();
+    let served_by_chat = chat_hits.len() == 3;
+    let served_by_native = native_hits.len() == 1;
+    assert!(
+        served_by_chat ^ served_by_native,
+        "exactly one lane served the g2 messages request: chat={:?} native={:?}",
+        chat_hits.len(),
+        native_hits.len()
+    );
+    if served_by_native {
+        let hit = &native_hits[0];
+        assert_eq!(hit.x_api_key.as_deref(), Some("native-key"));
+        assert_eq!(hit.version.as_deref(), Some("2023-06-01"));
+        assert!(
+            hit.authorization.is_none(),
+            "Bearer must not leak onto a native endpoint"
+        );
+        assert_eq!(
+            hit.body, anthropic_bytes,
+            "native key received the client's exact bytes"
+        );
+    } else {
+        assert_eq!(
+            chat_hits[2].key, "chat-nim-key",
+            "chat lane took the buffered g2 request"
+        );
+        assert!(
+            chat_hits[2].body.get("messages").is_some(),
+            "chat lane got the converted chat payload, not Anthropic bytes"
+        );
+    }
+    proxy.terminate();
+}
+
+#[tokio::test]
+async fn group_surface_split_rejects_chat_on_all_native_and_probes_models() {
+    let chat = start_mock().await;
+    let native = start_native_mock().await;
+    let proxy = t3_proxy(&chat, &native).await;
+    let c = client();
+    // g3 = {native} only: the chat wire has no candidate -> typed 4xx.
+    let resp = c
+        .post(proxy.url("/g3/v1/chat/completions"))
+        .json(&chat_body("g3", true))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = resp.json::<serde_json::Value>().await.unwrap();
+    assert_eq!(
+        status.as_u16(),
+        400,
+        "chat on an all-native group is rejected, not queued: {body}"
+    );
+    assert_eq!(body["error"]["code"], "chat_all_native");
+    // The models probe on an all-native group rejects too.
+    let resp = c.get(proxy.url("/g3/v1/models")).send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 400);
+    assert_eq!(
+        resp.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "group_no_models"
+    );
+    // An unknown group rejects with group_empty.
+    let resp = c
+        .post(proxy.url("/g-unknown/v1/chat/completions"))
+        .json(&chat_body("x", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 400);
+    assert_eq!(
+        resp.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "group_empty"
+    );
+    // An out-of-charset label rejects with invalid_route.
+    let resp = c
+        .post(proxy.url("/BAD%20LABEL/v1/chat/completions"))
+        .json(&chat_body("x", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        400,
+        "malformed labels never reach the pipeline"
+    );
+    assert_eq!(
+        resp.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "invalid_route"
+    );
+    // Zero upstream hits: every rejection is pre-queue.
+    assert_eq!(chat.state.hit_count(), 0);
+    assert_eq!(native.state.hit_count(), 0);
+    proxy.terminate();
+}
+
+#[tokio::test]
+async fn native_grant_streams_raw_sse_and_empty_stream_falls_back_to_chat() {
+    let chat = start_mock().await;
+    let native = start_native_mock().await;
+    let proxy = t3_proxy(&chat, &native).await;
+    let c = client();
+    // g3 = {native} only: every streaming messages request lands on the
+    // native lane and comes back as raw Anthropic SSE.
+    let mut last_client_body = Vec::new();
+    for i in 1..=6 {
+        let convo = format!("s{i}");
+        let anthropic = serde_json::json!({
+            "model": "mock/model-a",
+            "stream": true,
+            "max_tokens": 8,
+            "messages": [{"role": "user", "content": convo}]
+        });
+        let body = serde_json::to_vec(&anthropic).unwrap();
+        last_client_body = body.clone();
+        let resp = c
+            .post(proxy.url("/g3/v1/messages"))
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200, "g3 messages stream for {convo}");
+        let text = read_sse(resp).await;
+        assert!(
+            text.contains("hi from native"),
+            "native SSE must pass through raw (convo {convo}): {text}"
+        );
+    }
+    assert_eq!(
+        native.state.hit_count(),
+        6,
+        "one native hit per streaming request"
+    );
+    assert_eq!(chat.state.hit_count(), 0, "no chat lane involvement");
+    {
+        let hits = native.state.hits.lock().unwrap();
+        assert_eq!(hits.len(), 6);
+        assert_eq!(
+            hits[5].body, last_client_body,
+            "the native key's recorded body must byte-equal the client's bytes"
+        );
+    }
+    // Empty native stream: at least one g2 request with the empty-output
+    // model must land on the native lane (affinity pins are deterministic
+    // per body; enough distinct bodies make that near-certain), earn the
+    // fallback flip, and complete on a chat lane.
+    for i in 1..=16 {
+        let anthropic = serde_json::json!({
+            "model": "mock/empty",
+            "stream": true,
+            "max_tokens": 8,
+            "messages": [{"role": "user", "content": format!("f{i}")}]
+        });
+        let resp = c
+            .post(proxy.url("/g2/v1/messages"))
+            .header("content-type", "application/json")
+            .body(serde_json::to_vec(&anthropic).unwrap())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200, "g2 empty-model stream #{i}");
+        let text = read_sse(resp).await;
+        assert!(
+            !text.contains("\"proxy_error\""),
+            "the fallback must carry the stream to completion: {text}"
+        );
+    }
+    let empty_attempts = native
+        .state
+        .hits
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|h| {
+            serde_json::from_slice::<serde_json::Value>(&h.body)
+                .ok()
+                .and_then(|v| v["model"].as_str().map(|m| m == "mock/empty"))
+                .unwrap_or(false)
+        })
+        .count();
+    assert!(
+        empty_attempts > 0,
+        "at least one native-empty attempt must have occurred"
+    );
+    assert!(
+        chat.state.hit_count() >= 1,
+        "the empty native streams fell back to a chat lane"
+    );
+    proxy.terminate();
 }

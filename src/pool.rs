@@ -106,8 +106,21 @@ pub enum Reservation {
 pub struct LaneFilter {
     /// Only lanes tagged with this group label.
     pub group: Option<String>,
-    /// Drop native lanes (a chat surface, which native endpoints can't serve).
+    /// Drop native lanes. Set on chat surfaces, which native endpoints
+    /// can't serve, and on the in-stream retry after a native stream
+    /// carried no content; the mixed group surface leaves it false so the
+    /// bridge can still reach the chat lanes.
     pub exclude_native: bool,
+}
+
+/// Lane eligibility against a filter — shared by candidate counting and
+/// reservation so the two never drift apart.
+fn eligible(lane: &Lane, f: &LaneFilter) -> bool {
+    f.group
+        .as_deref()
+        .map(|g| lane.groups.iter().any(|x| x == g))
+        .unwrap_or(true)
+        && (!f.exclude_native || !lane.native)
 }
 impl Pool {
     pub fn new(specs: Vec<LaneSpec>) -> Self {
@@ -201,6 +214,39 @@ impl Pool {
             .collect()
     }
 
+    /// How many enabled lanes this request may use under `f` (group label
+    /// + native exclusion). The route layer checks this *before* queuing so
+    /// a group with no keys — or a chat surface on an all-native group —
+    /// fails fast with a typed 4xx instead of burning a queue slot.
+    /// Disabled carriers never count: they are not candidates.
+    pub fn candidates(&self, f: &LaneFilter) -> usize {
+        self.candidates_in(&self.lanes[..self.active], f)
+    }
+
+    /// Whether any enabled lane `f` may use carries `inject` (the NIM-only
+    /// stream_options compatibility patch gate). In-gateway patches run
+    /// only when some candidate lane could plausibly want one; a pure
+    /// routing pool (`inject: false` everywhere) stays untouched.
+    pub fn any_inject(&self, f: &LaneFilter) -> bool {
+        self.lanes[..self.active]
+            .iter()
+            .any(|l| eligible(l, f) && l.inject)
+    }
+
+    /// Count `f`-eligible lanes across the *whole* lane array, state
+    /// carriers included. Use for pre-flight checks where a disabled key
+    /// that would be eligible if re-enabled still matters ("add a key"
+    /// vs "re-enable the key you just disabled").
+    pub fn candidates_including_carriers(&self, f: &LaneFilter) -> usize {
+        self.candidates_in(&self.lanes, f)
+    }
+
+    /// Count `f`-eligible lanes inside an explicit slice; module-private
+    /// because callers reach it through the pool methods above.
+    fn candidates_in(&self, lanes: &[Lane], f: &LaneFilter) -> usize {
+        lanes.iter().filter(|l| eligible(l, f)).count()
+    }
+
     /// Take a slot on lane `i` if it has capacity right now. Reserving
     /// records the send timestamp immediately, so concurrent callers can't
     /// oversubscribe a lane.
@@ -248,16 +294,9 @@ impl Pool {
     /// not use being free never shortens the wait.
     pub fn reserve_filtered(&self, prefer: Option<usize>, f: &LaneFilter) -> Reservation {
         let now = Instant::now();
-        let eligible = |lane: &Lane| {
-            f.group
-                .as_deref()
-                .map(|g| lane.groups.iter().any(|x| x == g))
-                .unwrap_or(true)
-                && (!f.exclude_native || !lane.native)
-        };
         if let Some(p) = prefer
             .filter(|&p| p < self.active)
-            .filter(|&p| eligible(&self.lanes[p]))
+            .filter(|&p| eligible(&self.lanes[p], f))
         {
             if let Some(r) = self.try_take(p, now, true) {
                 return r;
@@ -267,7 +306,7 @@ impl Pool {
         let mut ready: Vec<(usize, usize)> = Vec::new(); // (in-window load, lane)
         let mut best_wait = WINDOW;
         for (i, lane) in self.lanes[..self.active].iter().enumerate() {
-            if !eligible(lane) {
+            if !eligible(lane, f) {
                 continue;
             }
             let cooldown = *lane.cooldown_until.lock().unwrap();
@@ -627,5 +666,58 @@ mod tests {
             Reservation::Wait(w) => assert!(w <= WINDOW),
             _ => panic!("a group with no tagged lane must not grant"),
         }
+    }
+
+    #[test]
+    fn candidates_counts_only_enabled_and_eligible_lanes() {
+        let in1 = LaneSpec {
+            groups: vec!["g1".into()],
+            ..spec("in1", 40, true)
+        };
+        let off = LaneSpec {
+            groups: vec!["g1".into()],
+            ..spec("off", 40, false)
+        };
+        let native = LaneSpec {
+            native: true,
+            groups: vec!["g1".into()],
+            ..spec("n", 40, true)
+        };
+        let pool = Pool::new(vec![in1, off, native]);
+        let chat_g1 = LaneFilter {
+            group: Some("g1".into()),
+            exclude_native: true,
+            ..Default::default()
+        };
+        // The disabled carrier never counts; the chat surface drops the
+        // native lane.
+        assert_eq!(pool.candidates(&chat_g1), 1);
+        // The mixed surface: native lanes are not excluded, so both the
+        // chat lane and the native lane are candidates (the native one
+        // serves /v1/messages by pass-through, the chat one via bridge).
+        let messages_g1 = LaneFilter {
+            group: Some("g1".into()),
+            ..Default::default()
+        };
+        assert_eq!(pool.candidates(&messages_g1), 2);
+        // Seeing through the disabled carrier: the whole lane array.
+        let carrier_filter = LaneFilter {
+            group: Some("g1".into()),
+            exclude_native: true,
+            ..Default::default()
+        };
+        assert_eq!(pool.candidates(&carrier_filter), 1);
+        assert_eq!(pool.candidates_including_carriers(&carrier_filter), 2);
+
+        let none_chat = LaneFilter {
+            exclude_native: true,
+            ..Default::default()
+        };
+        assert_eq!(pool.candidates(&none_chat), 1);
+        let missing = LaneFilter {
+            group: Some("missing".into()),
+            ..Default::default()
+        };
+        assert_eq!(pool.candidates(&missing), 0);
     }
 }
