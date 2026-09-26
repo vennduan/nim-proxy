@@ -269,8 +269,8 @@ body.on-settings .tright, body.on-settings #custom { display: none; }
 .ksec:not(.open) .kschev { transform: rotate(-90deg); }
 .ksec:not(.open) .ksbody { display: none; }
 .ksec .ksbody .krow:first-child { border-top: 0; }
-.kexp { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--card-border); background: none; color: var(--ink-3); cursor: pointer; flex: none; }
-.kexp:hover { color: var(--ink-1); border-color: rgba(255,255,255,0.18); }
+.kexp { color: var(--ink-3); border-color: var(--card-border); background: none; }
+.kexp:hover { color: var(--ink-1); border-color: rgba(255,255,255,0.18); background: none; }
 .krow.kopen .kexp { color: var(--green-lt); border-color: rgba(118,185,0,0.4); }
 .krow .kedit { flex: 1 1 100%; display: none; margin-top: 8px; padding: 10px 12px; background: rgba(255,255,255,0.03); border: 1px solid var(--card-border); border-radius: 10px; }
 .krow.kopen .kedit { display: block; }

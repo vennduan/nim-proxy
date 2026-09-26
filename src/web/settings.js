@@ -38,6 +38,7 @@ async function loadSettings(afterSave = false) {
 }
 
 const TRASH = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.8 9.5h6.4L12 4M6.5 7v4M9.5 7v4"/></svg>';
+const PENCIL = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 1.5a2 2 0 012.8 2.8L5 13.6l-3.3 1 1-3.3L11.5 1.5z"/></svg>';
 const CHEVDN = '<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 6l4.5 4.5L12.5 6"/></svg>';
 const LOCK = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="7" width="9" height="6.5" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/></svg>';
 const SICONS = {
@@ -148,10 +149,10 @@ function renderAccess() {
           ${k.base_url !== globalUrl ? `<span class="gchip" title="${escapeHtml(k.base_url)}">${escapeHtml(catalogMessage('settings.key.own_endpoint'))}</span>` : ''}
         </div>
       </div>
-      <button class="kexp" type="button" data-kexp="${i}" data-i18n-attr="title:settings.key.expand,aria-label:settings.key.expand"></button>
       <span class="${st.cls}" data-ksfp="${escapeHtml(k.fingerprint)}">${escapeHtml(catalogMessage(st.id, st.params))}</span>
       <span class="rpmwrap"><input class="sin num" type="number" min="1" max="100000" value="${+k.rpm}" data-rpm="${i}" data-i18n-attr="aria-label:settings.key.rpm"><span class="unitl">rpm</span></span>
       <button class="tog" type="button" aria-pressed="${!!k.enabled}" data-tog="${i}" data-i18n-attr="title:${k.enabled ? 'settings.key.toggle.disable' : 'settings.key.toggle.enable'},aria-label:${k.enabled ? 'settings.key.toggle.disable' : 'settings.key.toggle.enable'}"></button>
+      <button class="dbtn icon kexp" type="button" data-kexp="${i}" data-i18n-attr="title:settings.key.expand,aria-label:settings.key.expand">${PENCIL}</button>
       ${k.guarded
         ? `<span class="klock" data-i18n-attr="title:settings.key.guarded">${LOCK}</span>`
         : `<button class="dbtn icon" data-kdel="${i}" data-i18n-attr="title:settings.key.remove">${TRASH}</button>`}
