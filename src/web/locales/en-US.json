@@ -1106,6 +1106,10 @@
       "en": "Revoke",
       "hash": "87e6d00b"
     },
+    "settings.common.cancel": {
+      "en": "Cancel",
+      "hash": "19766ed6"
+    },
     "settings.common.done": {
       "en": "Done",
       "hash": "11a6767d"
@@ -1162,25 +1166,13 @@
       "en": "Request failed (HTTP {status}).",
       "hash": "3692891d"
     },
-    "settings.groups.empty": {
-      "en": "No keys carry group labels yet.",
-      "hash": "03607e59"
-    },
-    "settings.groups.heading": {
-      "en": "Groups",
-      "hash": "39bbb719"
-    },
-    "settings.groups.note": {
-      "en": "Keys aggregate under their /gN labels; /gN requests only reach labelled keys.",
-      "hash": "211f787f"
-    },
-    "settings.groups.rpm": {
-      "en": "Group rpm",
-      "hash": "500572cf"
-    },
     "settings.key.add_anyway": {
       "en": "Add anyway",
       "hash": "d0652ad3"
+    },
+    "settings.key.default_pool": {
+      "en": "Default pool",
+      "hash": "6497cbf6"
     },
     "settings.key.empty": {
       "en": "No NIM API keys yet — add one below",
@@ -1193,6 +1185,10 @@
     "settings.key.endpoint_default": {
       "en": "default endpoint",
       "hash": "579b6266"
+    },
+    "settings.key.expand": {
+      "en": "Edit this key",
+      "hash": "b6def27a"
     },
     "settings.key.group_title": {
       "en": "Group label: requests to this /gN route reach the key",
@@ -1274,6 +1270,10 @@
       "en": "Requests per minute",
       "hash": "aa6d477f"
     },
+    "settings.key.section_note": {
+      "en": "{n} keys · {rpm} rpm",
+      "hash": "12b3f0da"
+    },
     "settings.key.slot": {
       "en": "Slot {n}",
       "hash": "18616a78"
@@ -1301,6 +1301,10 @@
     "settings.key.toggle.enable": {
       "en": "Enable",
       "hash": "5342e09f"
+    },
+    "settings.key.toggle_section": {
+      "en": "Expand or collapse this section",
+      "hash": "838ade30"
     },
     "settings.key.validate_add": {
       "en": "Validate & add",

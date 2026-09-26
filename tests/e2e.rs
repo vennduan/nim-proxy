@@ -5175,14 +5175,26 @@ async fn dashboard_group_settings_markup() {
         "nk-native",
         "nk-inject",
         "nk-groups",
-        "data-groups",
-        "settings.groups.heading",
+        "data-kexp",
+        "data-ksect",
+        "data-kedit",
+        "data-edit-base",
+        "data-edit-native",
+        "data-edit-inject",
+        "settings.key.default_pool",
+        "settings.key.section_note",
         "settings.key.native_needs_endpoint",
     ] {
         assert!(settings_js.contains(field), "settings.js carries {field}");
     }
-    assert!(settings_js.contains(r#"data-i18n="settings.groups.heading""#));
-    assert_eq!(catalog["messages"]["settings.groups.heading"], "Groups");
+    // The standalone Groups card is gone: keys sit under their first group
+    // label in collapsible sections, and per-key editing lives row-inline.
+    assert!(!settings_js.contains("settings.groups.heading"));
+    assert!(settings_js.contains(r#"data-i18n="settings.key.default_pool""#));
+    assert_eq!(
+        catalog["messages"]["settings.key.section_note"],
+        "{n} keys · {rpm} rpm"
+    );
     assert_eq!(
         catalog["messages"]["settings.key.native_needs_endpoint"],
         "A native key needs its own endpoint — set the endpoint field."
