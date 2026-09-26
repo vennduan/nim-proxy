@@ -10,13 +10,17 @@
   "mode": "keyed",
   "nim_keys": [
     {
+      "base_url": "https://integrate.api.nvidia.com",
       "cooldown_ms": 0,
       "enabled": true,
       "fingerprint": "f17e0001",
+      "groups": [],
       "guarded": false,
       "in_window": 1,
+      "inject": true,
       "lane": 0,
       "last4": "wxyz",
+      "native": false,
       "owner": "fixture-user",
       "rpm": 40
     }

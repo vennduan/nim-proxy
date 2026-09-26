@@ -179,10 +179,12 @@ function renderKeys() {
     masked.textContent = mask(key.key);
     const meta = document.createElement("span");
     meta.className = "meta";
+    meta.dataset.i18n = "setup.step2.key_meta";
     setMessageText(meta, "setup.step2.key_meta", {
       models: key.models,
       rpm: key.rpm,
     });
+
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "ghost";
@@ -206,7 +208,7 @@ $("back1").onclick = () => show(1);
 $("back2").onclick = () => show(2);
 
 $("addkey").onclick = async () => {
-  const key = $("newkey").value.trim(), rpm = Math.max(1, Math.min(10000, +$("newrpm").value || 40));
+  const key = $("newkey").value.trim(), rpm = Math.max(1, Math.min(100000, +$("newrpm").value || 40));
   if (!key) return setMessageText($("err"), "setup.step2.error.key_required");
   if (keys.some(k => k.key === key)) return setMessageText($("err"), "setup.step2.error.key_duplicate");
   setErrorText("");

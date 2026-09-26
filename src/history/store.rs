@@ -1142,6 +1142,7 @@ mod tests {
             capacity_rpm: 80,
             enabled_keys: 2,
             key_rpms: vec![40, 40],
+            key_groups: vec![Vec::new(); 2],
         }
     }
 
@@ -1179,25 +1180,26 @@ mod tests {
         CapacitySnapshot {
             enabled_lanes: 2,
             rpms: vec![40, 40],
+            lane_groups: vec![Vec::new(); 2],
             capacity_rpm: 80,
         }
     }
 
     fn boot(timestamp: u64, boot_id: &str) -> String {
         format!(
-            r#"{{"format":"nimproxy-history","v":1,"kind":"boot","timestamp":{timestamp},"boot_id":"{boot_id}","capacity":{{"capacity_rpm":80,"enabled_keys":2,"key_rpms":[40,40]}}}}"#
+            r#"{{"format":"nimproxy-history","v":1,"kind":"boot","timestamp":{timestamp},"boot_id":"{boot_id}","capacity":{{"capacity_rpm":80,"enabled_keys":2,"key_rpms":[40,40],"key_groups":[[],[]]}}}}"#
         ) + "\n"
     }
 
     fn sample(timestamp: u64, boot_id: &str, value: f64) -> String {
         format!(
-            r#"{{"format":"nimproxy-history","v":1,"kind":"sample","timestamp":{timestamp},"boot_id":"{boot_id}","capacity":{{"capacity_rpm":80,"enabled_keys":2,"key_rpms":[40,40]}},"state":[{{"kind":"counter","metric":"nimproxy_requests_total","labels":{{"client":"synthetic-client"}},"value":{value}}}]}}"#
+            r#"{{"format":"nimproxy-history","v":1,"kind":"sample","timestamp":{timestamp},"boot_id":"{boot_id}","capacity":{{"capacity_rpm":80,"enabled_keys":2,"key_rpms":[40,40],"key_groups":[[],[]]}},"state":[{{"kind":"counter","metric":"nimproxy_requests_total","labels":{{"client":"synthetic-client"}},"value":{value}}}]}}"#
         ) + "\n"
     }
 
     fn sample_with_gauge(timestamp: u64, boot_id: &str, counter: f64, gauge: f64) -> String {
         format!(
-            r#"{{"format":"nimproxy-history","v":1,"kind":"sample","timestamp":{timestamp},"boot_id":"{boot_id}","capacity":{{"capacity_rpm":80,"enabled_keys":2,"key_rpms":[40,40]}},"state":[{{"kind":"counter","metric":"nimproxy_requests_total","labels":{{"client":"synthetic-client"}},"value":{counter}}},{{"kind":"gauge","metric":"nimproxy_active_requests","labels":{{"client":"synthetic-client"}},"value":{gauge}}}]}}"#
+            r#"{{"format":"nimproxy-history","v":1,"kind":"sample","timestamp":{timestamp},"boot_id":"{boot_id}","capacity":{{"capacity_rpm":80,"enabled_keys":2,"key_rpms":[40,40],"key_groups":[[],[]]}},"state":[{{"kind":"counter","metric":"nimproxy_requests_total","labels":{{"client":"synthetic-client"}},"value":{counter}}},{{"kind":"gauge","metric":"nimproxy_active_requests","labels":{{"client":"synthetic-client"}},"value":{gauge}}}]}}"#
         ) + "\n"
     }
 
@@ -1213,7 +1215,7 @@ mod tests {
 
     fn checkpoint(timestamp: u64, boot_id: &str) -> String {
         format!(
-            r#"{{"format":"nimproxy-history","v":1,"kind":"checkpoint","timestamp":{timestamp},"boot_id":"{boot_id}","capacity":{{"capacity_rpm":80,"enabled_keys":2,"key_rpms":[40,40]}}}}"#
+            r#"{{"format":"nimproxy-history","v":1,"kind":"checkpoint","timestamp":{timestamp},"boot_id":"{boot_id}","capacity":{{"capacity_rpm":80,"enabled_keys":2,"key_rpms":[40,40],"key_groups":[[],[]]}}}}"#
         ) + "\n"
     }
 
@@ -2326,6 +2328,116 @@ mod tests {
     }
 
     #[test]
+    fn capacity_without_key_groups_reads_back_as_ungrouped() {
+        // T5 proof (unit level): a canonical file written before key groups
+        // existed carries no `key_groups`; records must load, the capacity
+        // must read as ungrouped, and the store must stay appendable.
+        let dir = test_dir("pre-group-capacity");
+        let pre_group_capacity = Capacity {
+            capacity_rpm: 40,
+            enabled_keys: 1,
+            key_rpms: vec![40],
+            key_groups: Vec::new(),
+        };
+        // Hand-written because today's `encode_record` always emits
+        // `key_groups`: this is the *old* on-disk shape.
+        let pre_group_boot = serde_json::to_vec(&serde_json::json!({
+            "format": "nimproxy-history",
+            "v": 1,
+            "kind": "boot",
+            "timestamp": 10,
+            "boot_id": "boot-pre-group",
+            "capacity": {
+                "capacity_rpm": pre_group_capacity.capacity_rpm,
+                "enabled_keys": pre_group_capacity.enabled_keys,
+                "key_rpms": pre_group_capacity.key_rpms,
+            },
+        }))
+        .unwrap();
+        let pre_group_sample = serde_json::to_vec(&serde_json::json!({
+            "format": "nimproxy-history",
+            "v": 1,
+            "kind": "sample",
+            "timestamp": 20,
+            "boot_id": "boot-pre-group",
+            "capacity": {
+                "capacity_rpm": pre_group_capacity.capacity_rpm,
+                "enabled_keys": pre_group_capacity.enabled_keys,
+                "key_rpms": pre_group_capacity.key_rpms,
+            },
+            "state": [{
+                "kind": "counter",
+                "metric": "nimproxy_requests_total",
+                "labels": {},
+                "value": 1.0,
+            }],
+        }))
+        .unwrap();
+        // The pre-group bytes really lack the field, and they still decode:
+        // a missing `key_groups` reads back as ungrouped, never a rejection.
+        assert!(
+            !std::str::from_utf8(&pre_group_boot)
+                .unwrap()
+                .contains("key_groups"),
+            "fixture must be a pre-group encoding"
+        );
+        for line in [&pre_group_boot, &pre_group_sample] {
+            let record = decode_record(line).expect("pre-group record must decode");
+            let Record::Sample(sample) = &record else {
+                assert!(matches!(record, Record::Boot(_)));
+                continue;
+            };
+            assert_eq!(sample.capacity.key_groups, Vec::<Vec<String>>::new());
+        }
+        let mut seed = pre_group_boot;
+        seed.push(b'\n');
+        seed.extend_from_slice(&pre_group_sample);
+        seed.push(b'\n');
+        fs::write(dir.join("history-v1.jsonl"), seed).unwrap();
+
+        let current = capacity();
+        let mut store = HistoryStore::open(&dir, 30, current.clone()).unwrap();
+        let replayed = store.take_replay();
+        // The pre-group epoch was read, then closed off by the new boot;
+        // the replay keeps only the current boot (with live groups) plus
+        // the exclusion evidence.
+        let decoded: Vec<_> = replayed
+            .records
+            .iter()
+            .map(|record| match record {
+                Record::Boot(b) => (b.boot_id.clone(), b.capacity.key_groups.clone()),
+                Record::Sample(s) => (s.boot_id.clone(), s.capacity.key_groups.clone()),
+                Record::Checkpoint(c) => (c.boot_id.clone(), c.capacity.key_groups.clone()),
+            })
+            .collect();
+        // A clean pre-group file reads back exactly: its epoch is committed,
+        // then the new boot closes it off (the normal restart shape) and
+        // starts the live, group-labeled epoch. Neither record was rejected.
+        assert_eq!(
+            decoded,
+            [
+                ("boot-pre-group".to_owned(), Vec::<Vec<String>>::new()),
+                ("boot-pre-group".to_owned(), Vec::<Vec<String>>::new()),
+                (store.boot_id().to_owned(), current.key_groups.clone()),
+            ],
+            "pre-group records load ungrouped; the new boot carries live groups: {decoded:?}"
+        );
+        assert_eq!(
+            replayed.diagnostics.excluded_epochs, 0,
+            "a clean pre-group file is read, never rejected or dropped"
+        );
+        assert!(
+            replayed.gaps.is_empty(),
+            "a clean pre-group file opens no gaps"
+        );
+        // The store stayed appendable across the mixed-capacity replay.
+        store
+            .append_sample(40, current, state(2.0))
+            .expect("append after a pre-group replay");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn changed_state_writes_sample_unchanged_state_writes_checkpoint_and_capacity_is_live() {
         // This catches re-emitting full idle snapshots or freezing capacity at open.
         let dir = test_dir("idle");
@@ -2335,6 +2447,7 @@ mod tests {
             capacity_rpm: 20,
             enabled_keys: 1,
             key_rpms: vec![20],
+            key_groups: vec![Vec::new()],
         };
         store
             .append_sample(3, changed_capacity.clone(), state(1.0))

@@ -11,24 +11,32 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": 0,
+        "inject": true,
         "lane": 0,
         "last4": "wxyz",
+        "native": false,
         "owner": "fixture-user",
         "rpm": 40
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 1,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -102,24 +110,32 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": 1,
+        "inject": true,
         "lane": 0,
         "last4": "wxyz",
+        "native": false,
         "owner": "fixture-user",
         "rpm": 40
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 1,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -193,24 +209,32 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": 1,
+        "inject": true,
         "lane": 0,
         "last4": "wxyz",
+        "native": false,
         "owner": "fixture-user",
         "rpm": 40
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 1,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -284,24 +308,32 @@
     "mode": "open",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": 1,
+        "inject": true,
         "lane": 0,
         "last4": "wxyz",
+        "native": false,
         "owner": "fixture-user",
         "rpm": 40
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 1,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -369,24 +401,32 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": 1,
+        "inject": true,
         "lane": 0,
         "last4": "wxyz",
+        "native": false,
         "owner": "fixture-user",
         "rpm": 40
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 1,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -460,24 +500,32 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": 1,
+        "inject": true,
         "lane": 0,
         "last4": "wxyz",
+        "native": false,
         "owner": "fixture-user",
         "rpm": 40
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 1,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -545,24 +593,32 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": 1,
+        "inject": true,
         "lane": 0,
         "last4": "wxyz",
+        "native": false,
         "owner": "fixture-user",
         "rpm": 40
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 1,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -812,6 +868,7 @@
           },
           {
             "labels": {
+              "group": "default",
               "lane": "0"
             },
             "metric": "nimproxy_lane_requests_total",
@@ -819,6 +876,7 @@
           },
           {
             "labels": {
+              "group": "default",
               "lane": "0",
               "status": "429"
             },
@@ -1562,6 +1620,7 @@
           },
           {
             "labels": {
+              "group": "default",
               "lane": "0"
             },
             "metric": "nimproxy_lane_requests_total",
@@ -1569,6 +1628,7 @@
           },
           {
             "labels": {
+              "group": "default",
               "lane": "0",
               "status": "429"
             },
@@ -2302,6 +2362,7 @@
       },
       {
         "labels": {
+          "group": "default",
           "lane": "0"
         },
         "metric": "nimproxy_lane_requests_total",
@@ -2309,6 +2370,7 @@
       },
       {
         "labels": {
+          "group": "default",
           "lane": "0",
           "status": "429"
         },
@@ -2923,6 +2985,12 @@
     "config_revision": 7,
     "default_window_days": 30,
     "history_revision": 11,
+    "lane_groups": [
+      [
+        "g1"
+      ],
+      []
+    ],
     "lanes": 2,
     "metrics": [
       {
@@ -2955,6 +3023,9 @@
     "config_revision": 7,
     "default_window_days": 30,
     "history_revision": 11,
+    "lane_groups": [
+      []
+    ],
     "lanes": 1,
     "metrics": [
       {
@@ -3094,6 +3165,7 @@
       },
       {
         "labels": {
+          "group": "default",
           "lane": "0"
         },
         "metric": "nimproxy_lane_requests_total",
@@ -3101,6 +3173,7 @@
       },
       {
         "labels": {
+          "group": "default",
           "lane": "0",
           "status": "429"
         },
@@ -3741,6 +3814,12 @@
     "config_revision": 7,
     "default_window_days": 30,
     "history_revision": 11,
+    "lane_groups": [
+      [
+        "g1"
+      ],
+      []
+    ],
     "lanes": 2,
     "metrics": [
       {
@@ -3880,6 +3959,7 @@
       },
       {
         "labels": {
+          "group": "default",
           "lane": "0"
         },
         "metric": "nimproxy_lane_requests_total",
@@ -3887,6 +3967,7 @@
       },
       {
         "labels": {
+          "group": "default",
           "lane": "0",
           "status": "429"
         },
@@ -4528,6 +4609,12 @@
     "config_revision": 7,
     "default_window_days": 30,
     "history_revision": 11,
+    "lane_groups": [
+      [
+        "g1"
+      ],
+      []
+    ],
     "lanes": 2,
     "metrics": [
       {
@@ -4667,6 +4754,7 @@
       },
       {
         "labels": {
+          "group": "default",
           "lane": "0"
         },
         "metric": "nimproxy_lane_requests_total",
@@ -4674,6 +4762,7 @@
       },
       {
         "labels": {
+          "group": "default",
           "lane": "0",
           "status": "429"
         },
@@ -5495,6 +5584,7 @@
           },
           {
             "labels": {
+              "group": "default",
               "lane": "0"
             },
             "metric": "nimproxy_lane_requests_total",
@@ -5502,6 +5592,7 @@
           },
           {
             "labels": {
+              "group": "default",
               "lane": "0",
               "status": "429"
             },
@@ -6245,6 +6336,7 @@
           },
           {
             "labels": {
+              "group": "default",
               "lane": "0"
             },
             "metric": "nimproxy_lane_requests_total",
@@ -6252,6 +6344,7 @@
           },
           {
             "labels": {
+              "group": "default",
               "lane": "0",
               "status": "429"
             },
@@ -6985,6 +7078,7 @@
       },
       {
         "labels": {
+          "group": "default",
           "lane": "0"
         },
         "metric": "nimproxy_lane_requests_total",
@@ -6992,6 +7086,7 @@
       },
       {
         "labels": {
+          "group": "default",
           "lane": "0",
           "status": "429"
         },
@@ -7610,24 +7705,32 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": 1,
+        "inject": true,
         "lane": 0,
         "last4": "wxyz",
+        "native": false,
         "owner": "fixture-user",
         "rpm": 40
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 1,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -7701,24 +7804,32 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": 1,
+        "inject": true,
         "lane": 0,
         "last4": "wxyz",
+        "native": false,
         "owner": "fixture-user",
         "rpm": 40
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 1,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -7792,24 +7903,32 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": 1,
+        "inject": true,
         "lane": 0,
         "last4": "wxyz",
+        "native": false,
         "owner": "fixture-user",
         "rpm": 40
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 1,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -7883,24 +8002,32 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": 1,
+        "inject": true,
         "lane": 0,
         "last4": "wxyz",
+        "native": false,
         "owner": "fixture-user",
         "rpm": 40
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 1,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -7974,24 +8101,32 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": 1,
+        "inject": true,
         "lane": 0,
         "last4": "wxyz",
+        "native": false,
         "owner": "fixture-user",
         "rpm": 40
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 1,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -8065,24 +8200,32 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": 1,
+        "inject": true,
         "lane": 0,
         "last4": "wxyz",
+        "native": false,
         "owner": "fixture-user",
         "rpm": 40
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 1,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -8156,24 +8299,32 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": 1,
+        "inject": true,
         "lane": 0,
         "last4": "wxyz",
+        "native": false,
         "owner": "user-fixture-uuuuuuuuuuuuuuuuuuu",
         "rpm": 40
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 1,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -8247,13 +8398,17 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 0,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -8327,24 +8482,32 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": false,
         "in_window": 0,
+        "inject": true,
         "lane": 0,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": 1,
+        "inject": true,
         "lane": 1,
         "last4": "wxyz",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -8418,13 +8581,17 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 0,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -8498,24 +8665,32 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": null,
         "enabled": false,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": null,
+        "inject": true,
         "lane": null,
         "last4": "wxyz",
+        "native": false,
         "owner": "fixture-user",
         "rpm": 40
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 0,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -8589,24 +8764,32 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": 1,
+        "inject": true,
         "lane": 0,
         "last4": "wxyz",
+        "native": false,
         "owner": "fixture-user",
         "rpm": 41
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 1,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -8680,24 +8863,32 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": 1,
+        "inject": true,
         "lane": 0,
         "last4": "wxyz",
+        "native": false,
         "owner": "fixture-user",
         "rpm": 40
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 1,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -8769,24 +8960,32 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": 1,
+        "inject": true,
         "lane": 0,
         "last4": "wxyz",
+        "native": false,
         "owner": "fixture-user",
         "rpm": 40
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 1,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -8860,24 +9059,32 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": 1,
+        "inject": true,
         "lane": 0,
         "last4": "wxyz",
+        "native": false,
         "owner": "fixture-user",
         "rpm": 40
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 1,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -8951,24 +9158,32 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": 1,
+        "inject": true,
         "lane": 0,
         "last4": "wxyz",
+        "native": false,
         "owner": "fixture-user",
         "rpm": 40
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 1,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -9041,13 +9256,17 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 0,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -9109,13 +9328,17 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 0,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -9189,24 +9412,32 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": 1,
+        "inject": true,
         "lane": 0,
         "last4": "wxyz",
+        "native": false,
         "owner": "fixture-user",
         "rpm": 40
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 1,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -9274,13 +9505,17 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 0,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -9348,24 +9583,32 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": 1,
+        "inject": true,
         "lane": 0,
         "last4": "wxyz",
+        "native": false,
         "owner": "fixture-user",
         "rpm": 40
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 1,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }
@@ -9439,24 +9682,32 @@
     "mode": "keyed",
     "nim_keys": [
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "f17e0001",
+        "groups": [],
         "guarded": false,
         "in_window": 1,
+        "inject": true,
         "lane": 0,
         "last4": "wxyz",
+        "native": false,
         "owner": "fixture-user",
         "rpm": 40
       },
       {
+        "base_url": "https://integrate.api.nvidia.com",
         "cooldown_ms": 0,
         "enabled": true,
         "fingerprint": "5a000001",
+        "groups": [],
         "guarded": true,
         "in_window": 0,
+        "inject": true,
         "lane": 1,
         "last4": "root",
+        "native": false,
         "owner": "fixture-superuser",
         "rpm": 40
       }

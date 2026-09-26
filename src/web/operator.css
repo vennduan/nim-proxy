@@ -261,11 +261,26 @@ body.on-settings .tright, body.on-settings #custom { display: none; }
 .krow { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-top: 1px solid var(--hairline); }
 .krow:first-child { border-top: 0; }
 .krow.koff .kmask, .krow.koff .kmeta { color: var(--ink-4); }
+.ksec { margin-top: 12px; }
+.ksec:first-child { margin-top: 0; }
+.kshead { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: none; border: 0; padding: 8px 0; cursor: pointer; color: var(--ink-1); font: 600 12px var(--mono); }
+.kshead:hover { color: var(--ink-0, #fff); }
+.kschev { display: inline-flex; color: var(--ink-3); transition: transform 0.15s; flex: none; }
+.ksec:not(.open) .kschev { transform: rotate(-90deg); }
+.ksec:not(.open) .ksbody { display: none; }
+.ksec .ksbody .krow:first-child { border-top: 0; }
+.ktog { display: inline-flex; align-items: center; gap: 5px; font: 500 10px var(--mono); border: 1px solid var(--card-border); border-radius: 99px; padding: 3px 9px; color: var(--ink-3); cursor: pointer; white-space: nowrap; }
+.ktog input { accent-color: var(--green); width: 11px; height: 11px; margin: 0; cursor: pointer; }
+.ktog.on { color: var(--green-lt); border-color: rgba(118,185,0,0.4); background: rgba(118,185,0,0.14); }
+.krow.koff .ktog { opacity: 0.55; }
 .kmask { font: 600 13px var(--mono); color: var(--ink-1); }
 .kmeta { font: 400 11px var(--mono); color: var(--ink-3); margin-top: 2px; }
 .kstate { margin-left: auto; font: 500 11.5px var(--mono); color: var(--ink-25); flex: none; white-space: nowrap; }
 .klock { color: var(--ink-3); display: inline-flex; padding: 5px 8px; cursor: help; flex: none; }
 .tag { font: 600 10px var(--mono); border-radius: 99px; padding: 2px 8px; background: rgba(118,185,0,0.14); color: var(--green-lt); vertical-align: middle; }
+.gchip { font: 600 10px var(--mono); border-radius: 99px; padding: 2px 8px; background: rgba(80,140,255,0.14); color: var(--blue-lt, #7aa0ff); vertical-align: middle; }
+.kchk { display: inline-flex; align-items: center; gap: 6px; font: 500 11px var(--mono); color: var(--ink-25); flex: none; }
+.kchk input { accent-color: var(--green); }
 .addrow { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 14px; }
 .serr { font: 400 11.5px var(--mono); color: var(--red); min-height: 1.2em; margin-top: 8px; }
 .serr.ok { color: var(--green-lt); }
