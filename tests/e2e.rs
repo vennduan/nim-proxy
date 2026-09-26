@@ -7,6 +7,7 @@
 mod support;
 
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -16,8 +17,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use support::{
     chat_body, complete_setup, expect_refuses_to_start, login, login_as, metrics, read_sse,
-    restart, scratch_data_dir, start_mock, start_proxy, start_proxy_fresh, start_proxy_in,
-    start_proxy_with, start_search_mock, Behavior, SearchBehavior, StoreOpts, TEST_PASSWORD,
+    restart, scratch_data_dir, start_mock, start_native_mock, start_proxy, start_proxy_fresh,
+    start_proxy_in, start_proxy_with, start_search_mock, Behavior, FlatKey, SearchBehavior,
+    StoreOpts, TEST_PASSWORD,
 };
 
 fn client() -> reqwest::Client {
@@ -4257,9 +4259,140 @@ async fn upstream_connection_error_enters_cooldown() {
 
     let metrics = metrics(&proxy).await;
     assert!(
-        metrics.contains(r#"nimproxy_lane_cooldown_total{lane="0",status="connect"}"#),
+        metrics
+            .contains(r#"nimproxy_lane_cooldown_total{lane="0",group="default",status="connect"}"#),
         "connection error put the lane in cooldown: {metrics}"
     );
+}
+
+// ---------- T5: group-labeled lane series + legacy history ----------
+
+#[tokio::test]
+async fn t5_lane_metrics_carry_the_granted_group_label() {
+    let mock = start_mock().await;
+    // Two labeled lanes; one 429 in front of the script: the request rides
+    // out and the 429-cooled lane keeps its group label in the series.
+    mock.state.push(Behavior::RateLimited(1));
+    let proxy = start_proxy_with(
+        &mock.url,
+        StoreOpts {
+            flat_keys: vec![
+                support::FlatKey {
+                    key: "g-a-key".into(),
+                    base_url: mock.url.clone(),
+                    native: false,
+                    inject: true,
+                    groups: vec!["ga".into(), "gb".into()],
+                    rpm: 40,
+                },
+                support::FlatKey {
+                    key: "g-b-key".into(),
+                    base_url: mock.url.clone(),
+                    native: false,
+                    inject: true,
+                    groups: vec!["ga".into()],
+                    rpm: 40,
+                },
+            ],
+            ..Default::default()
+        },
+        &[],
+    )
+    .await;
+
+    let resp = client()
+        .post(proxy.url("/ga/v1/chat/completions"))
+        .json(&chat_body("t5 group lane", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "the group surface rides out the 429");
+    let _ = resp.bytes().await;
+
+    let keys = mock.state.hit_keys();
+    assert_eq!(
+        keys.len(),
+        2,
+        "one 429 then a success on the other lane: {keys:?}"
+    );
+    assert_ne!(keys[0], keys[1]);
+
+    let metrics = metrics(&proxy).await;
+    let cooldowns: Vec<&str> = metrics
+        .lines()
+        .filter(|line| line.starts_with("nimproxy_lane_cooldown_total"))
+        .collect();
+    assert!(
+        cooldowns
+            .iter()
+            .any(|line| line.contains("group=\"ga\"") && line.contains("status=\"429\"")),
+        "the 429-cooled lane keeps its group label in the new series: {metrics}"
+    );
+    let requests: Vec<&str> = metrics
+        .lines()
+        .filter(|line| line.starts_with("nimproxy_lane_requests_total"))
+        .collect();
+    assert!(
+        requests.iter().all(|line| line.contains("group=\"ga\"")),
+        "every new lane-request series carries the granted lane's group: {metrics}"
+    );
+}
+
+#[tokio::test]
+async fn t5_legacy_history_without_key_groups_boots_and_serves_groups() {
+    // Hand-written legacy canonical: both records predate `key_groups`,
+    // exactly the on-disk shape of a 0.6 install.
+    let data_dir = scratch_data_dir();
+    std::fs::write(
+        data_dir.join("config.json"),
+        serde_json::to_string_pretty(&StoreOpts::default().json("http://127.0.0.1:1")).unwrap(),
+    )
+    .unwrap();
+    let legacy_lines = [
+        r#"{"format":"nimproxy-history","v":1,"kind":"boot","timestamp":1000,"boot_id":"boot-legacy","capacity":{"capacity_rpm":80,"enabled_keys":2,"key_rpms":[40,40]}}"#,
+        r#"{"format":"nimproxy-history","v":1,"kind":"sample","timestamp":2000,"boot_id":"boot-legacy","capacity":{"capacity_rpm":80,"enabled_keys":2,"key_rpms":[40,40]},"state":[{"kind":"counter","metric":"nimproxy_requests_total","labels":{"client":"legacy-client","model":"m","path":"/v1/chat/completions","status":"200"},"value":5.0}]}"#,
+    ];
+    let mut bytes = Vec::new();
+    for line in legacy_lines {
+        bytes.extend_from_slice(line.as_bytes());
+        bytes.push(b'\n');
+    }
+    std::fs::write(data_dir.join("history-v1.jsonl"), bytes).unwrap();
+
+    let proxy = start_proxy_in(data_dir.clone(), &[]).await;
+    let cookie = login(&proxy).await;
+    let now = dashboard_now(&proxy, &cookie).await;
+    assert_eq!(
+        now["lane_groups"],
+        serde_json::json!([[], [], []]),
+        "legacy boot loads ungrouped; dashboard-now still reports live lane groups: {now}"
+    );
+
+    // The legacy file booted without rejection, so the new boot appended
+    // behind it. Retention may compact the 1970-dated legacy records away —
+    // in which case only the new boot remains — but any surviving legacy
+    // record must still be the ungrouped on-disk shape.
+    let rows = read_canonical_history(&data_dir.join("history-v1.jsonl"));
+    let new_boots: Vec<_> = rows
+        .iter()
+        .filter(|row| row["kind"] == "boot" && row["boot_id"] != "boot-legacy")
+        .collect();
+    assert!(
+        !new_boots.is_empty(),
+        "the new boot appended behind the legacy file: {rows:?}"
+    );
+    for boot in &new_boots {
+        assert!(
+            boot["capacity"]["key_groups"].is_array(),
+            "new boots carry the live key_groups field: {boot}"
+        );
+    }
+    for row in rows.iter().filter(|row| row["boot_id"] == "boot-legacy") {
+        assert!(
+            row["capacity"].get("key_groups").is_none(),
+            "a surviving legacy record stays ungrouped on disk: {row}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -4855,7 +4988,10 @@ async fn sigterm_shuts_down_cleanly() {
     let mock = start_mock().await;
     let proxy = start_proxy(&mock.url, &[]).await;
     let status = proxy.terminate();
+    #[cfg(unix)]
     assert!(status.success(), "clean exit on SIGTERM, got {status:?}");
+    #[cfg(windows)]
+    let _ = status;
 }
 
 #[tokio::test]
@@ -4885,9 +5021,15 @@ async fn dashboard_and_config_are_served_to_authenticated_users() {
         .await
         .unwrap();
     assert!(dashboard_js.contains("/api/dashboard/now"));
+    assert!(dashboard_js.contains("table-groups"));
+    assert!(dashboard_js.contains("lane_groups"));
     assert!(!dashboard_js.contains("fetch('/metrics')"));
     assert!(!dashboard_js.contains("/api/history?"));
     assert!(!dashboard_js.contains("/dash/config.json"));
+    assert!(
+        html.contains("table-groups"),
+        "the dashboard page renders the group columns"
+    );
 
     let now: serde_json::Value = client()
         .get(proxy.url("/api/dashboard/now"))
@@ -4998,6 +5140,52 @@ async fn dashboard_web_search_settings_markup() {
     assert_eq!(
         catalog["messages"]["settings.server.search.format_rss"],
         "rss"
+    );
+}
+
+/// The settings access tab carries the group view (T4): per-key group
+/// chips, the aggregated group card, and the group-edit input —
+/// catalog-owned markup, asserted against the served assets.
+#[tokio::test]
+async fn dashboard_group_settings_markup() {
+    let mock = start_mock().await;
+    let proxy = start_proxy(&mock.url, &[]).await;
+    let cookie = login(&proxy).await;
+
+    let settings_js = client()
+        .get(proxy.url("/assets/operator/settings.js"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let catalog: serde_json::Value = client()
+        .get(proxy.url("/assets/operator/locales/en-US.json"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    for field in [
+        "nk-base",
+        "nk-native",
+        "nk-inject",
+        "nk-groups",
+        "data-groups",
+        "settings.groups.heading",
+        "settings.key.native_needs_endpoint",
+    ] {
+        assert!(settings_js.contains(field), "settings.js carries {field}");
+    }
+    assert!(settings_js.contains(r#"data-i18n="settings.groups.heading""#));
+    assert_eq!(catalog["messages"]["settings.groups.heading"], "Groups");
+    assert_eq!(
+        catalog["messages"]["settings.key.native_needs_endpoint"],
+        "A native key needs its own endpoint — set the endpoint field."
     );
 }
 
@@ -5363,8 +5551,15 @@ async fn legacy_history_is_warned_once_without_parsing_or_mutating_it() {
         .local_addr()
         .unwrap()
         .port();
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_nim-proxy"))
-        .env_clear()
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_nim-proxy"));
+    // Windows: a cleared environment makes the proxy child's first TCP
+    // socket fail (WSP needs the shell environment), so isolate only where
+    // the clearing works.
+    #[cfg(not(windows))]
+    {
+        *cmd = std::mem::take(cmd).env_clear();
+    }
+    let mut child = cmd
         .current_dir(std::env::temp_dir())
         .env("PORT", port.to_string())
         .env("DATA_DIR", &data_dir)
@@ -5417,8 +5612,15 @@ async fn stale_canonical_temporaries_are_counted_once_without_inspection_or_dele
         .local_addr()
         .unwrap()
         .port();
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_nim-proxy"))
-        .env_clear()
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_nim-proxy"));
+    // Windows: a cleared environment makes the proxy child's first TCP
+    // socket fail (WSP needs the shell environment), so isolate only where
+    // the clearing works.
+    #[cfg(not(windows))]
+    {
+        *cmd = std::mem::take(cmd).env_clear();
+    }
+    let mut child = cmd
         .current_dir(std::env::temp_dir())
         .env("PORT", port.to_string())
         .env("DATA_DIR", &data_dir)
@@ -5530,13 +5732,16 @@ async fn setup_wizard_claims_the_proxy() {
     )
     .await;
 
-    // Credentials file is owner-only.
-    let mode = std::fs::metadata(proxy.data_dir.join("config.json"))
-        .unwrap()
-        .permissions()
-        .mode()
-        & 0o777;
-    assert_eq!(mode, 0o600, "config store must be 0600");
+    // Credentials file is owner-only (unix mode bits).
+    #[cfg(unix)]
+    {
+        let mode = std::fs::metadata(proxy.data_dir.join("config.json"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "config store must be 0600");
+    }
 
     #[cfg(unix)]
     {
@@ -6968,6 +7173,26 @@ async fn locale_preferences_are_fail_closed() {
     let mut failures = Vec::new();
     let mut rejection_byte_checks = 0;
 
+    // The fixture boots in the legacy `nim_keys` shape; the T1 migration
+    // rewrites it to flat `keys` on the first save. Trigger that commit
+    // once up front so every byte-diff below compares one stable shape.
+    let (status, content_type, body) = locale_post(
+        &proxy,
+        Some(superuser.as_str()),
+        "/api/settings/locale",
+        &serde_json::json!({"locale": "EN-us"}),
+    )
+    .await;
+    record_locale_response(
+        &mut failures,
+        "migration-shape-stabilizer",
+        status,
+        content_type.as_deref(),
+        &body,
+        reqwest::StatusCode::OK,
+        None,
+    );
+
     // GET /api/config is real server output, not a test-side Rust-wire copy.
     let (super_status, super_body) = locale_config_body(&proxy, &superuser).await;
     if super_status != 200 {
@@ -8115,6 +8340,9 @@ async fn combined_server_save_flushes_models_cache_only_for_upstream_change() {
     )
     .await;
     assert_eq!(status, 200, "{v}");
+    // The save flushes the catalog cache (an upstream change), but the
+    // lanes keep their key-owned base_urls (T1/T2): the refetch goes back
+    // to A, not to the document's new global base_url.
     client()
         .get(proxy.url("/v1/models"))
         .send()
@@ -8123,12 +8351,20 @@ async fn combined_server_save_flushes_models_cache_only_for_upstream_change() {
         .error_for_status()
         .unwrap();
     assert_eq!(
+        mock_a
+            .state
+            .models_hits
+            .load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "the flushed catalog refetches from the key-owned URL, not the stale cache"
+    );
+    assert_eq!(
         mock_b
             .state
             .models_hits
             .load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "catalog refetches from the new upstream, not the stale cache"
+        0,
+        "a global base_url change does not re-point the lanes (per-key URLs own the pool)"
     );
 
     let (status, v) = post_json(
@@ -8156,12 +8392,19 @@ async fn combined_server_save_flushes_models_cache_only_for_upstream_change() {
         .error_for_status()
         .unwrap();
     assert_eq!(
+        mock_a
+            .state
+            .models_hits
+            .load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "limits-only combined save preserves the upstream-owned catalog cache"
+    );
+    assert_eq!(
         mock_b
             .state
             .models_hits
             .load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "limits-only combined save preserves the upstream-owned catalog cache"
+        0
     );
 }
 
@@ -8565,6 +8808,10 @@ async fn history_settings_reflect_in_api_config() {
 
 /// The Server form changes the upstream and every limit in one transaction:
 /// neither half may publish when the other half is invalid.
+#[cfg_attr(
+    windows,
+    ignore = "the live-data-dir rename trick needs POSIX semantics; covered by the unix CI runners"
+)]
 #[tokio::test]
 async fn server_settings_save_is_atomic() {
     let mock = start_mock().await;
@@ -9782,4 +10029,597 @@ async fn messages_web_search_max_uses_stops_provider_calls() {
         message["usage"]["server_tool_use"]["web_search_requests"], 1,
         "the capped rounds made no provider requests: {message}"
     );
+}
+
+// ---------- T3: group routing (/gN/v1/...) + native pass-through ----------
+
+fn t3_keys(chat: &support::MockNim, native: &support::MockNative) -> Vec<FlatKey> {
+    vec![
+        FlatKey {
+            key: "chat-nim-key".into(),
+            base_url: chat.url.clone(),
+            native: false,
+            inject: true,
+            groups: vec!["g1".into(), "g2".into()],
+            rpm: 40,
+        },
+        FlatKey {
+            key: "native-key".into(),
+            base_url: native.url.clone(),
+            native: true,
+            inject: false,
+            groups: vec!["g2".into(), "g3".into()],
+            rpm: 40,
+        },
+        FlatKey {
+            key: "chat-pure-key".into(),
+            base_url: chat.url.clone(),
+            native: false,
+            inject: false,
+            groups: vec!["g1".into()],
+            rpm: 40,
+        },
+    ]
+}
+
+async fn t3_proxy(chat: &support::MockNim, native: &support::MockNative) -> support::Proxy {
+    support::start_proxy_with(
+        &chat.url,
+        StoreOpts {
+            flat_keys: t3_keys(chat, native),
+            ..Default::default()
+        },
+        &[],
+    )
+    .await
+}
+
+#[tokio::test]
+async fn group_routes_split_by_label_and_native_bytes_pass_through() {
+    let chat = start_mock().await;
+    let native = start_native_mock().await;
+    let proxy = t3_proxy(&chat, &native).await;
+    let c = client();
+    // g1 = {chat-nim, chat-pure}: both labels must be the only lanes that
+    // ever see this request.
+    let resp = c
+        .post(proxy.url("/g1/v1/chat/completions"))
+        .json(&chat_body("g1 convo", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "g1 chat must succeed");
+    resp.bytes().await.unwrap();
+    {
+        let hits = chat.state.hits.lock().unwrap();
+        assert_eq!(hits.len(), 1, "g1 must not touch other lanes");
+        let g1_keys: Vec<&str> = vec!["chat-nim-key", "chat-pure-key"];
+        assert!(
+            g1_keys.contains(&hits[0].key.as_str()),
+            "g1 routed off-label: {:?}",
+            hits[0].key
+        );
+    }
+    // g2 = {chat-nim, native}: a stream chat request must land on the
+    // chat-nim lane (native is excluded from the chat surface), with
+    // stream_options injected because that lane wants it.
+    let resp = c
+        .post(proxy.url("/g2/v1/chat/completions"))
+        .json(&chat_body("g2 convo", true))
+        .send()
+        .await
+        .unwrap();
+    read_sse(resp).await;
+    {
+        let hits = chat.state.hits.lock().unwrap();
+        assert_eq!(hits.len(), 2, "g2 chat took exactly one new hit");
+        assert_eq!(
+            hits[1].key, "chat-nim-key",
+            "g2 chat must skip native lanes"
+        );
+        assert_eq!(
+            hits[1].body["stream_options"]["include_usage"], true,
+            "g2 chat-nim lane is inject=true, so injection happens"
+        );
+    }
+    // g2 messages (buffered): native lanes are eligible on the messages
+    // surface, so either wire can serve; both outcomes are correct and both
+    // must be shaped correctly.
+    let anthropic = serde_json::json!({
+        "model": "mock/model-a",
+        "max_tokens": 8,
+        "messages": [{"role": "user", "content": "g2 buffered"}]
+    });
+    let anthropic_bytes = serde_json::to_vec(&anthropic).unwrap();
+    let resp = c
+        .post(proxy.url("/g2/v1/messages"))
+        .header("content-type", "application/json")
+        .body(anthropic_bytes.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "g2 messages (buffered)");
+    let resp_json: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        resp_json["type"], "message",
+        "Anthropic envelope came back: {resp_json}"
+    );
+    let native_hits = native.state.hits.lock().unwrap().clone();
+    let chat_hits = chat.state.hits.lock().unwrap().clone();
+    let served_by_chat = chat_hits.len() == 3;
+    let served_by_native = native_hits.len() == 1;
+    assert!(
+        served_by_chat ^ served_by_native,
+        "exactly one lane served the g2 messages request: chat={:?} native={:?}",
+        chat_hits.len(),
+        native_hits.len()
+    );
+    if served_by_native {
+        let hit = &native_hits[0];
+        assert_eq!(hit.x_api_key.as_deref(), Some("native-key"));
+        assert_eq!(hit.version.as_deref(), Some("2023-06-01"));
+        assert!(
+            hit.authorization.is_none(),
+            "Bearer must not leak onto a native endpoint"
+        );
+        assert_eq!(
+            hit.body, anthropic_bytes,
+            "native key received the client's exact bytes"
+        );
+    } else {
+        assert_eq!(
+            chat_hits[2].key, "chat-nim-key",
+            "chat lane took the buffered g2 request"
+        );
+        assert!(
+            chat_hits[2].body.get("messages").is_some(),
+            "chat lane got the converted chat payload, not Anthropic bytes"
+        );
+    }
+    proxy.terminate();
+}
+
+#[tokio::test]
+async fn group_surface_split_rejects_chat_on_all_native_and_probes_models() {
+    let chat = start_mock().await;
+    let native = start_native_mock().await;
+    let proxy = t3_proxy(&chat, &native).await;
+    let c = client();
+    // g3 = {native} only: the chat wire has no candidate -> typed 4xx.
+    let resp = c
+        .post(proxy.url("/g3/v1/chat/completions"))
+        .json(&chat_body("g3", true))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = resp.json::<serde_json::Value>().await.unwrap();
+    assert_eq!(
+        status.as_u16(),
+        400,
+        "chat on an all-native group is rejected, not queued: {body}"
+    );
+    assert_eq!(body["error"]["code"], "chat_all_native");
+    // The models probe on an all-native group rejects too.
+    let resp = c.get(proxy.url("/g3/v1/models")).send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 400);
+    assert_eq!(
+        resp.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "group_no_models"
+    );
+    // An unknown group rejects with group_empty.
+    let resp = c
+        .post(proxy.url("/g-unknown/v1/chat/completions"))
+        .json(&chat_body("x", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 400);
+    assert_eq!(
+        resp.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "group_empty"
+    );
+    // An out-of-charset label rejects with invalid_route.
+    let resp = c
+        .post(proxy.url("/BAD%20LABEL/v1/chat/completions"))
+        .json(&chat_body("x", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        400,
+        "malformed labels never reach the pipeline"
+    );
+    assert_eq!(
+        resp.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "invalid_route"
+    );
+    // Zero upstream hits: every rejection is pre-queue.
+    assert_eq!(chat.state.hit_count(), 0);
+    assert_eq!(native.state.hit_count(), 0);
+    proxy.terminate();
+}
+
+#[tokio::test]
+async fn native_grant_streams_raw_sse_and_empty_stream_falls_back_to_chat() {
+    let chat = start_mock().await;
+    let native = start_native_mock().await;
+    let proxy = t3_proxy(&chat, &native).await;
+    let c = client();
+    // g3 = {native} only: every streaming messages request lands on the
+    // native lane and comes back as raw Anthropic SSE.
+    let mut last_client_body = Vec::new();
+    for i in 1..=6 {
+        let convo = format!("s{i}");
+        let anthropic = serde_json::json!({
+            "model": "mock/model-a",
+            "stream": true,
+            "max_tokens": 8,
+            "messages": [{"role": "user", "content": convo}]
+        });
+        let body = serde_json::to_vec(&anthropic).unwrap();
+        last_client_body = body.clone();
+        let resp = c
+            .post(proxy.url("/g3/v1/messages"))
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200, "g3 messages stream for {convo}");
+        let text = read_sse(resp).await;
+        assert!(
+            text.contains("hi from native"),
+            "native SSE must pass through raw (convo {convo}): {text}"
+        );
+    }
+    assert_eq!(
+        native.state.hit_count(),
+        6,
+        "one native hit per streaming request"
+    );
+    assert_eq!(chat.state.hit_count(), 0, "no chat lane involvement");
+    {
+        let hits = native.state.hits.lock().unwrap();
+        assert_eq!(hits.len(), 6);
+        assert_eq!(
+            hits[5].body, last_client_body,
+            "the native key's recorded body must byte-equal the client's bytes"
+        );
+    }
+    // Empty native stream: at least one g2 request with the empty-output
+    // model must land on the native lane (affinity pins are deterministic
+    // per body; enough distinct bodies make that near-certain), earn the
+    // fallback flip, and complete on a chat lane.
+    for i in 1..=16 {
+        let anthropic = serde_json::json!({
+            "model": "mock/empty",
+            "stream": true,
+            "max_tokens": 8,
+            "messages": [{"role": "user", "content": format!("f{i}")}]
+        });
+        let resp = c
+            .post(proxy.url("/g2/v1/messages"))
+            .header("content-type", "application/json")
+            .body(serde_json::to_vec(&anthropic).unwrap())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200, "g2 empty-model stream #{i}");
+        let text = read_sse(resp).await;
+        assert!(
+            !text.contains("\"proxy_error\""),
+            "the fallback must carry the stream to completion: {text}"
+        );
+    }
+    let empty_attempts = native
+        .state
+        .hits
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|h| {
+            serde_json::from_slice::<serde_json::Value>(&h.body)
+                .ok()
+                .and_then(|v| v["model"].as_str().map(|m| m == "mock/empty"))
+                .unwrap_or(false)
+        })
+        .count();
+    assert!(
+        empty_attempts > 0,
+        "at least one native-empty attempt must have occurred"
+    );
+    assert!(
+        chat.state.hit_count() >= 1,
+        "the empty native streams fell back to a chat lane"
+    );
+    proxy.terminate();
+}
+
+// ---------- T4: settings endpoints + dashboard group view ----------
+
+fn t4_flat_store(chat: &support::MockNim, native: &support::MockNative) -> support::StoreOpts {
+    support::StoreOpts {
+        flat_keys: vec![
+            support::FlatKey {
+                key: "nim-key".into(),
+                base_url: chat.url.clone(),
+                native: false,
+                inject: true,
+                groups: vec!["g1".into()],
+                rpm: 40,
+            },
+            support::FlatKey {
+                key: "chat-key".into(),
+                base_url: chat.url.clone(),
+                native: false,
+                inject: false,
+                groups: vec!["g1".into(), "g2".into()],
+                rpm: 1,
+            },
+            support::FlatKey {
+                key: "native-key".into(),
+                base_url: native.url.clone(),
+                native: true,
+                inject: false,
+                groups: vec!["g2".into()],
+                rpm: 2,
+            },
+        ],
+        extra_users: vec![("alice".into(), "user".into())],
+        max_wait_secs: 2,
+        ..Default::default()
+    }
+}
+
+fn fp(key: &str) -> String {
+    support::sha256_hex(key)[..8].to_owned()
+}
+
+/// The dashboard group view is pure aggregation over the role-filtered rows:
+/// per-label member lists and enabled-rpm sums must agree with the rows, and
+/// a member edit must be durable on disk.
+#[tokio::test]
+async fn group_view_aggregates_members_and_edits_are_durable() {
+    let chat = support::start_mock().await;
+    let native = support::start_native_mock().await;
+    let proxy = support::start_proxy_with(&chat.url, t4_flat_store(&chat, &native), &[]).await;
+    let root = support::login(&proxy).await;
+
+    let cfg = api_config(&proxy, &root).await;
+    let rows = &cfg["nim_keys"].as_array().unwrap();
+    let group_of = |g: &str| {
+        rows.iter()
+            .filter(|k| {
+                k["groups"]
+                    .as_array()
+                    .map_or(false, |gs| gs.iter().any(|x| x == g))
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(group_of("g1").len(), 2, "g1: nim-key + chat-key");
+    let g1_rpm: usize = group_of("g1")
+        .iter()
+        .filter(|k| k["enabled"].as_bool() == Some(true))
+        .map(|k| k["rpm"].as_u64().unwrap() as usize)
+        .sum();
+    assert_eq!(g1_rpm, 41, "g1 group rpm sums the enabled members");
+    let g2 = group_of("g2");
+    assert_eq!(g2.len(), 2, "g2: chat-key + native-key");
+    assert_eq!(
+        g2.iter()
+            .filter(|k| k["native"].as_bool() == Some(true))
+            .count(),
+        1
+    );
+
+    // Member editing: move nim-key into both groups.
+    let fp = fp("nim-key");
+    let (status, v) = post_json(
+        &proxy,
+        &root,
+        "/api/settings/nim-keys",
+        serde_json::json!({"set": {"fingerprint": fp, "groups": ["g1", "g2"]}}),
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    let cfg2 = api_config(&proxy, &root).await;
+    let rows2 = &cfg2["nim_keys"].as_array().unwrap();
+    let g2_now = rows2
+        .iter()
+        .filter(|k| {
+            k["groups"]
+                .as_array()
+                .map_or(false, |gs| gs.iter().any(|x| x == "g2"))
+        })
+        .count();
+    assert_eq!(g2_now, 3, "the edited key now serves g2 as well");
+    // The durable store carries the edit (the pool rebuilt from it on commit).
+    let store: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(proxy.data_dir.join("config.json")).unwrap())
+            .unwrap();
+    let updated = store["upstream"]["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["key"] == "nim-key")
+        .unwrap();
+    assert_eq!(updated["groups"], serde_json::json!(["g1", "g2"]));
+
+    // A user role sees only their own rows — the group view aggregates the
+    // filtered view, so it never leaks other keys.
+    let alice = support::login_as(&proxy, "alice").await;
+    let (status, v) = post_json(
+        &proxy,
+        &alice,
+        "/api/settings/nim-keys",
+        serde_json::json!({"add": {"key": "alice-key", "groups": ["g1"], "rpm": 10}}),
+    )
+    .await;
+    assert_eq!(status.as_u16(), 200, "{v}");
+    let cfg3 = api_config(&proxy, &alice).await;
+    let rows3 = &cfg3["nim_keys"].as_array().unwrap();
+    assert_eq!(rows3.len(), 1, "the user view carries only the user's key");
+    assert_eq!(rows3[0]["groups"][0], "g1");
+    proxy.terminate();
+}
+
+/// Native keys are add-able through the endpoint with their own endpoint;
+/// a native key still pointing at the global NIM-shaped base_url, and a bad
+/// group label, are rejected at commit.
+#[tokio::test]
+async fn native_key_endpoint_add_and_store_rejections() {
+    let chat = support::start_mock().await;
+    let native = support::start_native_mock().await;
+    let proxy = support::start_proxy_with(&chat.url, support::StoreOpts::default(), &[]).await;
+    let root = support::login(&proxy).await;
+
+    let (status, v) = post_json(
+        &proxy,
+        &root,
+        "/api/settings/nim-keys",
+        serde_json::json!({"add": {"key": "anth-x", "base_url": native.url.clone(), "native": true, "inject": false, "groups": ["anth"], "rpm": 20}}),
+    )
+    .await;
+    assert_eq!(status.as_u16(), 200, "{v}");
+    let cfg = api_config(&proxy, &root).await;
+    let rows = &cfg["nim_keys"].as_array().unwrap();
+    let r = rows
+        .iter()
+        .find(|k| k["fingerprint"] == fp("anth-x"))
+        .unwrap();
+    assert_eq!(r["native"], serde_json::json!(true));
+    assert_eq!(r["inject"], serde_json::json!(false));
+    assert_eq!(r["base_url"], native.url);
+    assert_eq!(r["groups"], serde_json::json!(["anth"]));
+
+    // A native key on the global NIM-shaped endpoint is rejected.
+    let (status, v) = post_json(
+        &proxy,
+        &root,
+        "/api/settings/nim-keys",
+        serde_json::json!({"add": {"key": "anth-y", "native": true, "rpm": 20}}),
+    )
+    .await;
+    assert_eq!(
+        status.as_u16(),
+        400,
+        "a native key needs its own endpoint: {v}"
+    );
+    // A bad group label is rejected at commit (the validator rulebook).
+    let (status, v) = post_json(
+        &proxy,
+        &root,
+        "/api/settings/nim-keys",
+        serde_json::json!({"add": {"key": "g-bad", "groups": ["Bad G"], "rpm": 20}}),
+    )
+    .await;
+    assert_eq!(status.as_u16(), 400, "bad group label: {v}");
+    proxy.terminate();
+}
+
+/// Changing one key's rpm re-points only that key's window: on a group of
+/// one chat key (rpm 1) and one inject-off pure-routing key, exhausting the
+/// chat key's window does not drag the group's other members with it, and
+/// raising the chat key's rpm gives the group headroom immediately.
+#[tokio::test]
+async fn rpm_change_only_touches_the_edited_key_window() {
+    let chat = support::start_mock().await;
+    let proxy = support::start_proxy_with(
+        &chat.url,
+        support::StoreOpts {
+            flat_keys: vec![
+                support::FlatKey {
+                    key: "g-solo-key".into(),
+                    base_url: chat.url.clone(),
+                    native: false,
+                    inject: true,
+                    groups: vec!["solo".into()],
+                    rpm: 1,
+                },
+                support::FlatKey {
+                    key: "g-other-key".into(),
+                    base_url: chat.url.clone(),
+                    native: false,
+                    inject: false,
+                    groups: vec!["solo".into()],
+                    rpm: 40,
+                },
+            ],
+            max_wait_secs: 2,
+            ..Default::default()
+        },
+        &[],
+    )
+    .await;
+    let root = support::login(&proxy).await;
+
+    // Both group members carry traffic until g-solo-key's rpm-1 window
+    // spends; the group then keeps routing g-other-key alone.
+    for i in 0..3 {
+        let r = client()
+            .post(proxy.url("/solo/v1/chat/completions"))
+            .json(&support::chat_body(&format!("solo {i}"), false))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200, "g-requests keep serving: {i}");
+    }
+    let solo_hits = chat
+        .state
+        .hits
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|h| h.key == "g-solo-key")
+        .count();
+    assert_eq!(solo_hits, 1, "the rpm-1 key served exactly one request");
+
+    // Raising the edited key's rpm re-points only its window — the group's
+    // rpm-1 member gets a second request now; the unedited key's window is
+    // untouched (still whatever it held).
+    let (status, v) = post_json(
+        &proxy,
+        &root,
+        "/api/settings/nim-keys",
+        serde_json::json!({"set": {"fingerprint": fp("g-solo-key"), "rpm": 5}}),
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    let other_before = api_config(&proxy, &root).await["nim_keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["fingerprint"] == fp("g-other-key"))
+        .unwrap()["in_window"]
+        .clone();
+    let fourth = client()
+        .post(proxy.url("/solo/v1/chat/completions"))
+        .json(&support::chat_body("solo again", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(fourth.status(), 200, "raised rpm serves from the group");
+    let solo_hits = chat
+        .state
+        .hits
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|h| h.key == "g-solo-key")
+        .count();
+    assert_eq!(solo_hits, 2, "the raised key now serves again");
+    let other_after = api_config(&proxy, &root).await["nim_keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["fingerprint"] == fp("g-other-key"))
+        .unwrap()["in_window"]
+        .clone();
+    assert_eq!(
+        other_before, other_after,
+        "the unedited key's window is unchanged by the sibling's rpm raise"
+    );
+    proxy.terminate();
 }

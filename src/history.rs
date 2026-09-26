@@ -299,6 +299,7 @@ fn canonical_capacity(capacity: &CapacitySnapshot) -> codec::Capacity {
         capacity_rpm: capacity.capacity_rpm,
         enabled_keys: capacity.enabled_lanes,
         key_rpms: capacity.rpms.clone(),
+        key_groups: capacity.lane_groups.clone(),
     }
 }
 
@@ -364,6 +365,7 @@ fn ingest_canonical_sample(
             capacity: Some(CapacitySnapshot {
                 enabled_lanes: capacity.enabled_keys,
                 rpms: capacity.key_rpms,
+                lane_groups: capacity.key_groups,
                 capacity_rpm: capacity.capacity_rpm,
             }),
         });
@@ -376,6 +378,12 @@ fn ingest_canonical_sample(
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct CapacitySnapshot {
     pub enabled_lanes: usize,
+    /// Per-lane group labels in lane order; `[]` is the default-pool member.
+    /// Serialized into capacity blocks so group-labeled series stay
+    /// attributable after a restart. Old records lack the field and read
+    /// as ungrouped.
+    #[serde(default)]
+    pub lane_groups: Vec<Vec<String>>,
     pub rpms: Vec<usize>,
     pub capacity_rpm: usize,
 }
@@ -1699,6 +1707,7 @@ mod tests {
         CapacitySnapshot {
             enabled_lanes: usize::from(rpm > 0),
             rpms: (rpm > 0).then_some(rpm).into_iter().collect(),
+            lane_groups: (rpm > 0).then(Vec::new).into_iter().collect(),
             capacity_rpm: rpm,
         }
     }
@@ -2835,6 +2844,7 @@ nimproxy_ttft_seconds_count{model="z-ai/glm-5.2"} 4
             CapacitySnapshot {
                 enabled_lanes: 1,
                 rpms: vec![40],
+                lane_groups: vec![Vec::new()],
                 capacity_rpm: 40,
             },
         );
@@ -2916,6 +2926,7 @@ nimproxy_ttft_seconds_count{model="z-ai/glm-5.2"} 4
             CapacitySnapshot {
                 enabled_lanes: 2,
                 rpms: vec![40, 40],
+                lane_groups: vec![Vec::new(); 2],
                 capacity_rpm: 80,
             },
         );
@@ -2936,6 +2947,7 @@ nimproxy_ttft_seconds_count{model="z-ai/glm-5.2"} 4
             CapacitySnapshot {
                 enabled_lanes: 2,
                 rpms: vec![40, 40],
+                lane_groups: vec![Vec::new(); 2],
                 capacity_rpm: 80,
             },
         );
@@ -2947,6 +2959,7 @@ nimproxy_ttft_seconds_count{model="z-ai/glm-5.2"} 4
             capacity_rpm: rpms.iter().sum(),
             enabled_keys: rpms.len(),
             key_rpms: rpms.to_vec(),
+            key_groups: vec![Vec::new(); rpms.len()],
         }
     }
 
@@ -2954,6 +2967,7 @@ nimproxy_ttft_seconds_count{model="z-ai/glm-5.2"} 4
         CapacitySnapshot {
             enabled_lanes: capacity.enabled_keys,
             rpms: capacity.key_rpms.clone(),
+            lane_groups: capacity.key_groups.clone(),
             capacity_rpm: capacity.capacity_rpm,
         }
     }

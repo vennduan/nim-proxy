@@ -223,6 +223,7 @@ fn capacity_snapshot(pool: &Pool) -> history::CapacitySnapshot {
     history::CapacitySnapshot {
         enabled_lanes: pool.len(),
         rpms: pool.rpms(),
+        lane_groups: pool.lane_groups(),
         capacity_rpm: pool.capacity_rpm(),
     }
 }
@@ -350,6 +351,7 @@ async fn api_dashboard_now(
         default_window_days: config.default_window_days,
         history_revision,
         lanes: pool.len(),
+        lane_groups: pool.lane_groups(),
         metrics: current.metrics,
         retention_days: config.retention_days,
         rpms: pool.rpms(),
@@ -750,6 +752,10 @@ pub async fn run() {
             routes::SETUP_VALIDATE_KEY,
             post(settings::setup_validate_key),
         )
+        // Group-scoped surface: /{group}/v1/… picks the key pool by label.
+        // Axum matches literals before wildcards, so it owns the first
+        // segment even when a group is literally "v1".
+        .route(routes::GROUP_V1, any(proxy::handle_group))
         // The Anthropic Messages bridge: registered ahead of the /v1 wildcard
         // so it owns /v1/messages; every other /v1 path stays untouched.
         .route(routes::MESSAGES, post(proxy::handle_messages))

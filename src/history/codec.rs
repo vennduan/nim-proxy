@@ -41,6 +41,11 @@ pub struct Capacity {
     pub capacity_rpm: usize,
     pub enabled_keys: usize,
     pub key_rpms: Vec<usize>,
+    /// Per-lane group labels in lane order (a lane may carry several).
+    /// Absent in v1 files written before key groups existed; old records
+    /// read as ungrouped.
+    #[serde(default)]
+    pub key_groups: Vec<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

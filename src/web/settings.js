@@ -112,9 +112,16 @@ function renderAccess() {
       <div data-style="min-width:0">
         <div class="kmask">nvapi-••••${escapeHtml(k.last4)}${ownerChip(k.owner)}</div>
         <div class="kmeta">fp ${escapeHtml(String(k.fingerprint).slice(0, 8))} · ${k.lane != null ? escapeHtml(catalogMessage('settings.key.slot', { n: NUM_GROUPED.format(+k.lane + 1) })) : k.enabled ? escapeHtml(catalogMessage('settings.key.state.unassigned')) : escapeHtml(catalogMessage('settings.key.off'))}</div>
+        <div data-style="display:flex;gap:4px;flex-wrap:wrap;margin-top:3px">
+          ${k.native ? `<span class="gchip" data-i18n-attr="title:settings.key.native_title">${escapeHtml(catalogMessage('settings.key.native'))}</span>` : ''}
+          ${k.inject ? '' : `<span class="gchip" data-i18n-attr="title:settings.key.pure_routing_title">${escapeHtml(catalogMessage('settings.key.pure_routing'))}</span>`}
+          ${(k.groups || []).map(g => `<span class="gchip" data-i18n-attr="title:settings.key.group_title">${escapeHtml('/' + g)}</span>`).join('')}
+          ${k.base_url !== (SET.server ? SET.server.base_url : '') ? `<span class="gchip" title="${escapeHtml(k.base_url)}">${escapeHtml(catalogMessage('settings.key.own_endpoint'))}</span>` : ''}
+        </div>
       </div>
+      <input class="sin gedit" type="text" data-groups="${i}" value="${escapeHtml((k.groups || []).join(', '))}" placeholder="${escapeHtml(catalogMessage('settings.key.groups_ph'))}" data-i18n-attr="aria-label:settings.key.groups" spellcheck="false" data-style="width:120px;flex:0 0 auto">
       <span class="${st.cls}" data-ksfp="${escapeHtml(k.fingerprint)}">${escapeHtml(catalogMessage(st.id, st.params))}</span>
-      <span class="rpmwrap"><input class="sin num" type="number" min="1" max="10000" value="${+k.rpm}" data-rpm="${i}" data-i18n-attr="aria-label:settings.key.rpm"><span class="unitl">rpm</span></span>
+      <span class="rpmwrap"><input class="sin num" type="number" min="1" max="100000" value="${+k.rpm}" data-rpm="${i}" data-i18n-attr="aria-label:settings.key.rpm"><span class="unitl">rpm</span></span>
       <button class="tog" type="button" aria-pressed="${!!k.enabled}" data-tog="${i}" data-i18n-attr="title:${k.enabled ? 'settings.key.toggle.disable' : 'settings.key.toggle.enable'},aria-label:${k.enabled ? 'settings.key.toggle.disable' : 'settings.key.toggle.enable'}"></button>
       ${k.guarded
         ? `<span class="klock" data-i18n-attr="title:settings.key.guarded">${LOCK}</span>`
@@ -128,18 +135,42 @@ function renderAccess() {
       ${admin ? `<span class="tag">${escapeHtml(ck.owner)}</span>` : ''}
       <button class="dbtn" data-style="margin-left:auto" data-ckdel="${i}" data-i18n="settings.client_key.revoke"></button>
     </div>`).join('');
+  // Group view: keys aggregate under their /gN labels (the server filtered
+  // the rows by role already; the view is pure aggregation, no registry).
+  const groupMap = new Map();
+  for (const k of SET.nim_keys) for (const g of (k.groups || [])) {
+    if (!groupMap.has(g)) groupMap.set(g, { rpm: 0, members: [] });
+    const e = groupMap.get(g);
+    if (k.enabled) e.rpm += +k.rpm;
+    e.members.push(k);
+  }
+  const groupRows = [...groupMap.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([g, e]) => `<div class="krow">
+      <span class="gchip" data-style="flex:0 0 72px">${escapeHtml('/' + g)}</span>
+      <span class="kmask" data-style="flex:1">${e.members.map(k => escapeHtml('nvapi-••••' + k.last4 + (k.native ? ' · ' + catalogMessage('settings.key.native') : ''))).join(' · ')}</span>
+      <span class="kmeta">${escapeHtml(catalogMessage('settings.groups.rpm'))}: ${NUM_GROUPED.format(e.rpm)}</span>
+    </div>`).join('');
   $('setbody').innerHTML = `
     <div class="card mb">
       <h2><span data-i18n="${admin ? 'settings.key.heading.all' : 'settings.key.heading.mine'}"></span> <span class="note" id="pool-note">${escapeHtml(catalogMessage('settings.key.pool_note', { enabled: NUM_GROUPED.format(+SET.pool.enabled), capacity: NUM_GROUPED.format(+SET.pool.capacity_rpm) }))}</span></h2>
       <p class="shint" data-i18n="${admin ? 'settings.key.notice.admin' : 'settings.key.notice.mine'}"></p>
       <div>${keyRows || '<div class="empty" data-i18n="settings.key.empty"></div>'}</div>
-      <div class="addrow">
+      <div class="addrow" data-style="flex-wrap:wrap;row-gap:8px">
         <input id="nk-key" class="sin" data-style="flex:1;min-width:200px" type="password" data-i18n-attr="placeholder:settings.key.placeholder,aria-label:settings.key.placeholder" autocomplete="off" spellcheck="false">
-        <span class="rpmwrap"><input id="nk-rpm" class="sin num" type="number" min="1" max="10000" value="40" data-i18n-attr="aria-label:settings.key.rpm"><span class="unitl">rpm</span></span>
+        <span class="rpmwrap"><input id="nk-rpm" class="sin num" type="number" min="1" max="100000" value="40" data-i18n-attr="aria-label:settings.key.rpm"><span class="unitl">rpm</span></span>
+        <input id="nk-base" class="sin" type="text" placeholder="${escapeHtml(catalogMessage('settings.key.endpoint_default'))}" data-i18n-attr="aria-label:settings.key.endpoint" spellcheck="false" data-style="min-width:180px">
+        <label class="kchk"><input id="nk-native" type="checkbox"><span data-i18n="settings.key.native"></span></label>
+        <label class="kchk"><input id="nk-inject" type="checkbox" checked><span data-i18n="settings.key.inject"></span></label>
+        <input id="nk-groups" class="sin" type="text" placeholder="${escapeHtml(catalogMessage('settings.key.groups_ph'))}" data-i18n-attr="aria-label:settings.key.groups" spellcheck="false" data-style="width:110px">
         <button class="pbtn" id="nk-add" data-i18n="settings.key.validate_add"></button>
         <button class="gbtn" id="nk-force" hidden data-i18n="settings.key.add_anyway"></button>
       </div>
       <div class="serr" id="nk-err"></div>
+    </div>
+    <div class="card mb">
+      <h2><span data-i18n="settings.groups.heading"></span> <span class="note" data-i18n="settings.groups.note"></span></h2>
+      <div>${groupRows || '<div class="empty" data-i18n="settings.groups.empty"></div>'}</div>
     </div>
     <div class="card mb">
       <h2><span data-i18n="${admin ? 'settings.client_key.heading.all' : 'settings.client_key.heading.mine'}"></span> <span class="note" data-i18n="settings.client_key.note"></span></h2>
@@ -169,7 +200,15 @@ function renderAccess() {
   for (const el of body.querySelectorAll('[data-rpm]')) el.addEventListener('change', async () => {
     const k = SET.nim_keys[+el.dataset.rpm];
     try {
-      await sPost('/api/settings/nim-keys', { set: { fingerprint: k.fingerprint, rpm: clampInt(el.value, 1, 10000, +k.rpm) } });
+      await sPost('/api/settings/nim-keys', { set: { fingerprint: k.fingerprint, rpm: clampInt(el.value, 1, 100000, +k.rpm) } });
+      await loadSettings();
+    } catch (e) { note('nk-err', e.message); }
+  });
+  for (const el of body.querySelectorAll('[data-groups]')) el.addEventListener('change', async () => {
+    const k = SET.nim_keys[+el.dataset.groups];
+    const groups = el.value.split(/\s*,/).map(t => t.trim()).filter(Boolean);
+    try {
+      await sPost('/api/settings/nim-keys', { set: { fingerprint: k.fingerprint, groups } });
       await loadSettings();
     } catch (e) { note('nk-err', e.message); }
   });
@@ -188,12 +227,29 @@ function renderAccess() {
   });
   /* validate first; "Add anyway" appears only after a failed probe */
   const addKey = async () => {
-    await sPost('/api/settings/nim-keys', { add: { key: $('nk-key').value.trim(), rpm: clampInt($('nk-rpm').value, 1, 10000, 40) } });
+    const native = $('nk-native').checked;
+    const base_url = $('nk-base').value.trim();
+    if (native && !base_url) return noteMessage('nk-err', 'settings.key.native_needs_endpoint');
+    const body = {
+      key: $('nk-key').value.trim(),
+      rpm: clampInt($('nk-rpm').value, 1, 100000, 40),
+      native,
+      inject: $('nk-inject').checked,
+      groups: $('nk-groups').value.split(/\s*,/).map(t => t.trim()).filter(Boolean),
+    };
+    if (base_url) body.base_url = base_url;
+    await sPost('/api/settings/nim-keys', { add: body });
     await loadSettings();
   };
   $('nk-add').addEventListener('click', async () => {
     const key = $('nk-key').value.trim();
     if (!key) return noteMessage('nk-err', 'settings.validation.nim_key_required');
+    if ($('nk-native').checked) {
+      // A native endpoint is not NIM: probe the wrong wire would 4xx with
+      // Anthropic-shaped errors, so add directly (endpoint field required).
+      try { await addKey(); } catch (e) { note('nk-err', e.message); }
+      return;
+    }
     $('nk-add').disabled = true; setMessageText($('nk-add'), 'settings.key.validating');
     try {
       const v = await sPost('/api/settings/validate-key', { key });
