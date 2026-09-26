@@ -34,6 +34,9 @@ struct Ctx {
     client: String,
     model: String,
     path: String,
+    /// Canonical group label this request ran under: the requested `/g`
+    /// route label, `default` on the un-grouped surface.
+    group: String,
     /// Generation endpoint the request was served on: the OpenAI-wire chat
     /// surface or the Anthropic Messages bridge that funnels into it. Bounded
     /// to the two values of the `endpoint` label vocabulary.
@@ -245,6 +248,7 @@ fn record_request(ctx: &Ctx, status: &str) {
     counter!(
         "nimproxy_requests_total",
         "client" => ctx.client.clone(),
+        "group" => ctx.group.clone(),
         "model" => ctx.model.clone(),
         "path" => ctx.path.clone(),
         "status" => status.to_owned(),
@@ -264,6 +268,7 @@ fn record_deadline(ctx: &Ctx) {
     counter!(
         "nimproxy_deadline_exceeded_total",
         "client" => ctx.client.clone(),
+        "group" => ctx.group.clone(),
         "model" => ctx.model.clone(),
         "path" => ctx.path.clone(),
     )
@@ -273,13 +278,19 @@ fn record_deadline(ctx: &Ctx) {
 
 fn record_tokens(ctx: &Ctx, prompt: Option<u64>, completion: Option<u64>, source: &str) {
     if let Some(p) = prompt {
-        counter!("nimproxy_prompt_tokens_total", "client" => ctx.client.clone(), "model" => ctx.model.clone())
-            .increment(p);
+        counter!(
+            "nimproxy_prompt_tokens_total",
+            "client" => ctx.client.clone(),
+            "group" => ctx.group.clone(),
+            "model" => ctx.model.clone()
+        )
+        .increment(p);
     }
     if let Some(c) = completion {
         counter!(
             "nimproxy_completion_tokens_total",
             "client" => ctx.client.clone(),
+            "group" => ctx.group.clone(),
             "model" => ctx.model.clone(),
             "source" => source.to_owned(),
         )
@@ -340,6 +351,7 @@ fn record_shape(ctx: &Ctx, parsed: Option<&serde_json::Value>, wants_stream: boo
         "nimproxy_stream_requests_total",
         "client" => ctx.client.clone(),
         "endpoint" => ctx.endpoint,
+        "group" => ctx.group.clone(),
         "stream" => if wants_stream { "true" } else { "false" }.to_owned(),
     )
     .increment(1);
@@ -349,6 +361,7 @@ fn record_shape(ctx: &Ctx, parsed: Option<&serde_json::Value>, wants_stream: boo
             "nimproxy_request_messages",
             "client" => ctx.client.clone(),
             "endpoint" => ctx.endpoint,
+            "group" => ctx.group.clone(),
         )
         .record(msgs.len() as f64);
     }
@@ -357,11 +370,13 @@ fn record_shape(ctx: &Ctx, parsed: Option<&serde_json::Value>, wants_stream: boo
             "nimproxy_request_tools",
             "client" => ctx.client.clone(),
             "endpoint" => ctx.endpoint,
+            "group" => ctx.group.clone(),
         )
         .record(n as f64);
         counter!(
             "nimproxy_tool_choice_total",
             "endpoint" => ctx.endpoint,
+            "group" => ctx.group.clone(),
             "mode" => tool_choice_mode(v).to_owned(),
         )
         .increment(1);
@@ -375,6 +390,7 @@ fn record_shape(ctx: &Ctx, parsed: Option<&serde_json::Value>, wants_stream: boo
             "nimproxy_request_max_tokens",
             "client" => ctx.client.clone(),
             "endpoint" => ctx.endpoint,
+            "group" => ctx.group.clone(),
         )
         .record(mt as f64);
     }
@@ -383,6 +399,7 @@ fn record_shape(ctx: &Ctx, parsed: Option<&serde_json::Value>, wants_stream: boo
             "nimproxy_request_temperature",
             "client" => ctx.client.clone(),
             "endpoint" => ctx.endpoint,
+            "group" => ctx.group.clone(),
         )
         .record(t);
     }
@@ -391,6 +408,7 @@ fn record_shape(ctx: &Ctx, parsed: Option<&serde_json::Value>, wants_stream: boo
             "nimproxy_json_mode_total",
             "client" => ctx.client.clone(),
             "endpoint" => ctx.endpoint,
+            "group" => ctx.group.clone(),
         )
         .increment(1);
     }
@@ -467,6 +485,7 @@ fn record_observations(
         };
         counter!(
             "nimproxy_finish_reason_total",
+            "group" => ctx.group.clone(),
             "model" => ctx.model.clone(),
             "reason" => reason.metric_label(),
         )
@@ -474,13 +493,13 @@ fn record_observations(
     }
     if let Observation::Measured(reasoning) = observations.usage.reasoning_tokens {
         if reasoning > 0 {
-            counter!("nimproxy_reasoning_tokens_total", "model" => ctx.model.clone())
+            counter!("nimproxy_reasoning_tokens_total", "group" => ctx.group.clone(), "model" => ctx.model.clone())
                 .increment(reasoning);
         }
     }
     if let Observation::Measured(tool_calls) = observations.tool_calls {
         if tool_calls > 0 {
-            counter!("nimproxy_tool_calls_total", "model" => ctx.model.clone())
+            counter!("nimproxy_tool_calls_total", "group" => ctx.group.clone(), "model" => ctx.model.clone())
                 .increment(tool_calls);
         }
     }
@@ -657,6 +676,7 @@ pub async fn handle_group(
         client,
         model: label_model(&state, raw_model),
         path: label_path(path_only),
+        group: group.clone(),
         endpoint: if anthropic_surface {
             "messages"
         } else {
@@ -1119,6 +1139,7 @@ pub async fn handle(
         client,
         model: label_model(&state, raw_model),
         path: label_path(uri.path()),
+        group: "default".to_owned(),
         endpoint: "chat",
         started: Instant::now(),
     };
@@ -1358,6 +1379,7 @@ pub async fn handle_messages(
         client,
         model: label_model(&state, request_model.as_str()),
         path: label_path("/v1/chat/completions"),
+        group: "default".to_owned(),
         endpoint: "messages",
         started: Instant::now(),
     };
@@ -1890,7 +1912,7 @@ async fn buffered(
             enter_cooldown(&slot, status.as_str(), backoff);
             continue;
         }
-        histogram!("nimproxy_upstream_seconds", "model" => ctx.model.clone())
+        histogram!("nimproxy_upstream_seconds", "group" => ctx.group.clone(), "model" => ctx.model.clone())
             .record(sent_at.elapsed().as_secs_f64());
         if bridge_post.is_none() {
             record_request(&ctx, resp.status().as_str());
@@ -2160,7 +2182,7 @@ fn streaming(
                             }
                             if first_chunk.is_none() {
                                 first_chunk = Some(Instant::now());
-                                histogram!("nimproxy_ttft_seconds", "model" => ctx.model.clone())
+                                histogram!("nimproxy_ttft_seconds", "group" => ctx.group.clone(), "model" => ctx.model.clone())
                                     .record(sent_at.elapsed().as_secs_f64());
                             }
                             if !native_round {
@@ -2254,16 +2276,16 @@ fn streaming(
                 if let (Some(first), Some((c, source))) = (first_chunk, completion) {
                     let gen_secs = first.elapsed().as_secs_f64();
                     if gen_secs > 0.1 && c > 0 {
-                        histogram!("nimproxy_tokens_per_second", "model" => ctx.model.clone(), "source" => source)
+                        histogram!("nimproxy_tokens_per_second", "group" => ctx.group.clone(), "model" => ctx.model.clone(), "source" => source)
                         .record(c as f64 / gen_secs);
                         // Mean inter-token latency (time-per-output-token).
-                        histogram!("nimproxy_tpot_seconds", "model" => ctx.model.clone())
+                        histogram!("nimproxy_tpot_seconds", "group" => ctx.group.clone(), "model" => ctx.model.clone())
                             .record(gen_secs / c as f64);
                     }
                 }
                 // Total upstream time for streaming, for parity with the buffered
                 // path (which records upstream_seconds directly).
-                histogram!("nimproxy_upstream_seconds", "model" => ctx.model.clone())
+                histogram!("nimproxy_upstream_seconds", "group" => ctx.group.clone(), "model" => ctx.model.clone())
                     .record(sent_at.elapsed().as_secs_f64());
                 record_request(&ctx, "200");
                 return;

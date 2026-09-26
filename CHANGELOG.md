@@ -27,6 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when ungrouped) — a wire-format addition to existing series; canonical
   history gains `capacity.key_groups` / `lane_groups` (absent in old
   records, which read as ungrouped).
+- Every request- and model-grained series now carries the request's group
+  context: `nimproxy_requests_total`, `nimproxy_deadline_exceeded_total`,
+  `nimproxy_prompt/completion_tokens_total`, `nimproxy_finish_reason_total`,
+  `nimproxy_reasoning_tokens_total`, `nimproxy_tool_calls_total`,
+  `nimproxy_ttft_seconds`, `nimproxy_upstream_seconds`,
+  `nimproxy_tpot_seconds`, `nimproxy_tokens_per_second`, the request-shape
+  histograms, and the stream/tool-choice/json-mode counters all add a
+  `group` label (the requested `/{group}` route label, `default` on the
+  un-grouped surface), so token spend and latency split cleanly per group.
 - Legacy stores keep booting: the v0.6.x `nim_keys` config block and
   pre-group `history-v1.jsonl` files load unchanged and are treated as
   ungrouped; the first settings commit migrates the config one-way to the
@@ -39,8 +48,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   means "inherit the global base_url"), so legacy keys can get an own
   endpoint or native routing after creation with no drawer or save button.
   The standalone Groups overview card is gone — the grouped list replaced it.
-
-### Added
 
 - New `POST /v1/messages` Anthropic-compatible bridge: requests are converted
   to the OpenAI chat dialect, paced through the shared key pool exactly like

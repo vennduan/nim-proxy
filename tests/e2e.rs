@@ -2323,10 +2323,10 @@ async fn buffered_deadline_cancels_header_wait_and_releases_inflight_slot() {
 
     let metrics = metrics(&proxy).await;
     assert!(metrics.contains(
-        r#"nimproxy_requests_total{client="local",model="mock/model-a",path="/v1/chat/completions",status="deadline"} 1"#
+        r#"nimproxy_requests_total{client="local",group="default",model="mock/model-a",path="/v1/chat/completions",status="deadline"} 1"#
     ));
     assert!(metrics.contains(
-        r#"nimproxy_deadline_exceeded_total{client="local",model="mock/model-a",path="/v1/chat/completions"} 1"#
+        r#"nimproxy_deadline_exceeded_total{client="local",group="default",model="mock/model-a",path="/v1/chat/completions"} 1"#
     ));
 }
 
@@ -2455,8 +2455,8 @@ async fn streaming_deadline_finalizes_early_usage_once_without_losing_measuremen
         );
     }
     assert!(
-        metrics.contains(r#"nimproxy_prompt_tokens_total{client="local",model="mock/model-a"} 7"#)
-            && metrics.contains(r#"nimproxy_completion_tokens_total{client="local",model="mock/model-a",source="usage"} 3"#),
+        metrics.contains(r#"nimproxy_prompt_tokens_total{client="local",group="default",model="mock/model-a"} 7"#)
+            && metrics.contains(r#"nimproxy_completion_tokens_total{client="local",group="default",model="mock/model-a",source="usage"} 3"#),
         "measured token counters survive the deadline: {metrics}"
     );
 }
@@ -2924,7 +2924,7 @@ async fn metrics_report_traffic_tokens_and_affinity() {
     assert!(metrics.contains(r#"client="alice""#));
     assert!(metrics.contains(r#"model="mock/model-a""#));
     assert!(
-        metrics.contains(r#"nimproxy_completion_tokens_total{client="alice",model="mock/model-a",source="usage"} 2"#),
+        metrics.contains(r#"nimproxy_completion_tokens_total{client="alice",group="default",model="mock/model-a",source="usage"} 2"#),
         "exact usage counted: {metrics}"
     );
     assert!(metrics.contains("nimproxy_affinity_total"));
@@ -3037,7 +3037,7 @@ async fn dashboard_observation_quality_is_honest() {
     loop {
         let request_rows = metrics(&proxy).await;
         if request_rows.lines().any(|line| {
-            line == r#"nimproxy_requests_total{client="local",model="mock/model-a",path="/v1/chat/completions",status="disconnect"} 1"#
+            line == r#"nimproxy_requests_total{client="local",group="default",model="mock/model-a",path="/v1/chat/completions",status="disconnect"} 1"#
         }) {
             break;
         }
@@ -3247,16 +3247,20 @@ async fn request_shape_and_quality_metrics_are_recorded() {
     // Request shape (labeled by client — open mode admits everyone as "local").
     assert!(
         metrics.contains(
-            r#"nimproxy_stream_requests_total{client="local",endpoint="chat",stream="true"}"#
+            r#"nimproxy_stream_requests_total{client="local",endpoint="chat",group="default",stream="true"}"#
         ),
         "stream flag counted: {metrics}"
     );
     assert!(
-        metrics.contains(r#"nimproxy_request_messages_count{client="local",endpoint="chat"}"#),
+        metrics.contains(
+            r#"nimproxy_request_messages_count{client="local",endpoint="chat",group="default"}"#
+        ),
         "conversation depth histogram present"
     );
     assert!(
-        metrics.contains(r#"nimproxy_request_tools_count{client="local",endpoint="chat"}"#),
+        metrics.contains(
+            r#"nimproxy_request_tools_count{client="local",endpoint="chat",group="default"}"#
+        ),
         "tools-offered histogram present"
     );
     assert!(
@@ -3268,26 +3272,30 @@ async fn request_shape_and_quality_metrics_are_recorded() {
         "max_tokens histogram present"
     );
     assert!(
-        metrics.contains(r#"nimproxy_tool_choice_total{endpoint="chat",mode="auto"}"#),
+        metrics
+            .contains(r#"nimproxy_tool_choice_total{endpoint="chat",group="default",mode="auto"}"#),
         "tool_choice mode counted"
     );
 
     // Response quality.
     assert!(
-        metrics.contains(r#"nimproxy_finish_reason_total{model="mock/model-a",reason="stop"}"#),
+        metrics.contains(
+            r#"nimproxy_finish_reason_total{group="default",model="mock/model-a",reason="stop"}"#
+        ),
         "stop finish recorded: {metrics}"
     );
     assert!(
         metrics
-            .contains(r#"nimproxy_finish_reason_total{model="mock/model-a",reason="tool_calls"}"#),
+            .contains(r#"nimproxy_finish_reason_total{group="default",model="mock/model-a",reason="tool_calls"}"#),
         "tool_calls finish recorded"
     );
     assert!(
-        metrics.contains(r#"nimproxy_tool_calls_total{model="mock/model-a"}"#),
+        metrics.contains(r#"nimproxy_tool_calls_total{group="default",model="mock/model-a"}"#),
         "tool-call volume recorded"
     );
     assert!(
-        metrics.contains(r#"nimproxy_reasoning_tokens_total{model="mock/model-a"}"#),
+        metrics
+            .contains(r#"nimproxy_reasoning_tokens_total{group="default",model="mock/model-a"}"#),
         "reasoning tokens recorded"
     );
 
@@ -3355,33 +3363,41 @@ async fn buffered_quality_and_edge_cases_are_recorded() {
     // Buffered quality extraction (from relay()).
     assert!(
         metrics
-            .contains(r#"nimproxy_finish_reason_total{model="mock/model-a",reason="tool_calls"}"#),
+            .contains(r#"nimproxy_finish_reason_total{group="default",model="mock/model-a",reason="tool_calls"}"#),
         "buffered tool_calls finish recorded: {metrics}"
     );
     assert!(
-        metrics.contains(r#"nimproxy_tool_calls_total{model="mock/model-a"}"#),
+        metrics.contains(r#"nimproxy_tool_calls_total{group="default",model="mock/model-a"}"#),
         "buffered tool-call count recorded"
     );
     assert!(
-        metrics.contains(r#"nimproxy_reasoning_tokens_total{model="mock/model-a"}"#),
+        metrics
+            .contains(r#"nimproxy_reasoning_tokens_total{group="default",model="mock/model-a"}"#),
         "buffered reasoning tokens recorded"
     );
     assert!(
-        metrics.contains(r#"nimproxy_upstream_seconds_count{model="mock/model-a"}"#),
+        metrics
+            .contains(r#"nimproxy_upstream_seconds_count{group="default",model="mock/model-a"}"#),
         "upstream latency recorded on the buffered path"
     );
 
     // Edge cases.
     assert!(
-        metrics.contains(r#"nimproxy_tool_choice_total{endpoint="chat",mode="required"}"#),
+        metrics.contains(
+            r#"nimproxy_tool_choice_total{endpoint="chat",group="default",mode="required"}"#
+        ),
         "non-auto tool_choice mode recorded"
     );
     assert!(
-        metrics.contains(r#"nimproxy_json_mode_total{client="local",endpoint="chat"}"#),
+        metrics.contains(
+            r#"nimproxy_json_mode_total{client="local",endpoint="chat",group="default"}"#
+        ),
         "JSON mode recorded"
     );
     assert!(
-        metrics.contains(r#"nimproxy_finish_reason_total{model="mock/model-a",reason="other"}"#),
+        metrics.contains(
+            r#"nimproxy_finish_reason_total{group="default",model="mock/model-a",reason="other"}"#
+        ),
         "unknown finish_reason collapsed to other: {metrics}"
     );
     assert!(
@@ -3465,7 +3481,7 @@ async fn messages_bridge_converts_paces_and_maps_back() {
     let metrics = metrics(&proxy).await;
     assert!(
         metrics.contains(
-            r#"nimproxy_stream_requests_total{client="local",endpoint="messages",stream="false"}"#
+            r#"nimproxy_stream_requests_total{client="local",endpoint="messages",group="default",stream="false"}"#
         ),
         "bridge shape counted on the messages endpoint: {metrics}"
     );
@@ -4336,6 +4352,82 @@ async fn t5_lane_metrics_carry_the_granted_group_label() {
         requests.iter().all(|line| line.contains("group=\"ga\"")),
         "every new lane-request series carries the granted lane's group: {metrics}"
     );
+}
+
+#[tokio::test]
+async fn t8_route_group_label_reaches_the_model_grained_series() {
+    let mock = start_mock().await;
+    let proxy = start_proxy_with(
+        &mock.url,
+        StoreOpts {
+            flat_keys: vec![
+                support::FlatKey {
+                    key: "g-a-key".into(),
+                    base_url: mock.url.clone(),
+                    native: false,
+                    inject: true,
+                    groups: vec!["ga".into()],
+                    rpm: 40,
+                },
+                support::FlatKey {
+                    key: "default-key".into(),
+                    base_url: mock.url.clone(),
+                    native: false,
+                    inject: true,
+                    groups: vec![],
+                    rpm: 40,
+                },
+            ],
+            ..Default::default()
+        },
+        &[],
+    )
+    .await;
+
+    let group_resp = client()
+        .post(proxy.url("/ga/v1/chat/completions"))
+        .json(&chat_body("t8 group lane", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(group_resp.status(), 200, "the group surface is served");
+    let _ = group_resp.bytes().await;
+
+    let default_resp = client()
+        .post(proxy.url("/v1/chat/completions"))
+        .json(&chat_body("t8 default lane", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(default_resp.status(), 200, "the default surface is served");
+    let _ = default_resp.bytes().await;
+
+    let metrics = metrics(&proxy).await;
+    for metric in [
+        "nimproxy_requests_total",
+        "nimproxy_completion_tokens_total",
+        "nimproxy_prompt_tokens_total",
+        "nimproxy_finish_reason_total",
+    ] {
+        let group_lines: Vec<&str> = metrics
+            .lines()
+            .filter(|line| line.starts_with(metric))
+            .filter(|line| line.contains("group=\"ga\""))
+            .collect();
+        assert!(
+            !group_lines.is_empty(),
+            "{metric} carries the requested route group: {metrics}"
+        );
+        let group_lines: Vec<&str> = metrics
+            .lines()
+            .filter(|line| line.starts_with(metric))
+            .filter(|line| line.contains("group=\"default\""))
+            .collect();
+        assert!(
+            !group_lines.is_empty(),
+            "{metric} carries the default pool group: {metrics}"
+        );
+    }
 }
 
 #[tokio::test]
