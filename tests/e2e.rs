@@ -4259,9 +4259,140 @@ async fn upstream_connection_error_enters_cooldown() {
 
     let metrics = metrics(&proxy).await;
     assert!(
-        metrics.contains(r#"nimproxy_lane_cooldown_total{lane="0",status="connect"}"#),
+        metrics
+            .contains(r#"nimproxy_lane_cooldown_total{lane="0",group="default",status="connect"}"#),
         "connection error put the lane in cooldown: {metrics}"
     );
+}
+
+// ---------- T5: group-labeled lane series + legacy history ----------
+
+#[tokio::test]
+async fn t5_lane_metrics_carry_the_granted_group_label() {
+    let mock = start_mock().await;
+    // Two labeled lanes; one 429 in front of the script: the request rides
+    // out and the 429-cooled lane keeps its group label in the series.
+    mock.state.push(Behavior::RateLimited(1));
+    let proxy = start_proxy_with(
+        &mock.url,
+        StoreOpts {
+            flat_keys: vec![
+                support::FlatKey {
+                    key: "g-a-key".into(),
+                    base_url: mock.url.clone(),
+                    native: false,
+                    inject: true,
+                    groups: vec!["ga".into(), "gb".into()],
+                    rpm: 40,
+                },
+                support::FlatKey {
+                    key: "g-b-key".into(),
+                    base_url: mock.url.clone(),
+                    native: false,
+                    inject: true,
+                    groups: vec!["ga".into()],
+                    rpm: 40,
+                },
+            ],
+            ..Default::default()
+        },
+        &[],
+    )
+    .await;
+
+    let resp = client()
+        .post(proxy.url("/ga/v1/chat/completions"))
+        .json(&chat_body("t5 group lane", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "the group surface rides out the 429");
+    let _ = resp.bytes().await;
+
+    let keys = mock.state.hit_keys();
+    assert_eq!(
+        keys.len(),
+        2,
+        "one 429 then a success on the other lane: {keys:?}"
+    );
+    assert_ne!(keys[0], keys[1]);
+
+    let metrics = metrics(&proxy).await;
+    let cooldowns: Vec<&str> = metrics
+        .lines()
+        .filter(|line| line.starts_with("nimproxy_lane_cooldown_total"))
+        .collect();
+    assert!(
+        cooldowns
+            .iter()
+            .any(|line| line.contains("group=\"ga\"") && line.contains("status=\"429\"")),
+        "the 429-cooled lane keeps its group label in the new series: {metrics}"
+    );
+    let requests: Vec<&str> = metrics
+        .lines()
+        .filter(|line| line.starts_with("nimproxy_lane_requests_total"))
+        .collect();
+    assert!(
+        requests.iter().all(|line| line.contains("group=\"ga\"")),
+        "every new lane-request series carries the granted lane's group: {metrics}"
+    );
+}
+
+#[tokio::test]
+async fn t5_legacy_history_without_key_groups_boots_and_serves_groups() {
+    // Hand-written legacy canonical: both records predate `key_groups`,
+    // exactly the on-disk shape of a 0.6 install.
+    let data_dir = scratch_data_dir();
+    std::fs::write(
+        data_dir.join("config.json"),
+        serde_json::to_string_pretty(&StoreOpts::default().json("http://127.0.0.1:1")).unwrap(),
+    )
+    .unwrap();
+    let legacy_lines = [
+        r#"{"format":"nimproxy-history","v":1,"kind":"boot","timestamp":1000,"boot_id":"boot-legacy","capacity":{"capacity_rpm":80,"enabled_keys":2,"key_rpms":[40,40]}}"#,
+        r#"{"format":"nimproxy-history","v":1,"kind":"sample","timestamp":2000,"boot_id":"boot-legacy","capacity":{"capacity_rpm":80,"enabled_keys":2,"key_rpms":[40,40]},"state":[{"kind":"counter","metric":"nimproxy_requests_total","labels":{"client":"legacy-client","model":"m","path":"/v1/chat/completions","status":"200"},"value":5.0}]}"#,
+    ];
+    let mut bytes = Vec::new();
+    for line in legacy_lines {
+        bytes.extend_from_slice(line.as_bytes());
+        bytes.push(b'\n');
+    }
+    std::fs::write(data_dir.join("history-v1.jsonl"), bytes).unwrap();
+
+    let proxy = start_proxy_in(data_dir.clone(), &[]).await;
+    let cookie = login(&proxy).await;
+    let now = dashboard_now(&proxy, &cookie).await;
+    assert_eq!(
+        now["lane_groups"],
+        serde_json::json!([[], [], []]),
+        "legacy boot loads ungrouped; dashboard-now still reports live lane groups: {now}"
+    );
+
+    // The legacy file booted without rejection, so the new boot appended
+    // behind it. Retention may compact the 1970-dated legacy records away —
+    // in which case only the new boot remains — but any surviving legacy
+    // record must still be the ungrouped on-disk shape.
+    let rows = read_canonical_history(&data_dir.join("history-v1.jsonl"));
+    let new_boots: Vec<_> = rows
+        .iter()
+        .filter(|row| row["kind"] == "boot" && row["boot_id"] != "boot-legacy")
+        .collect();
+    assert!(
+        !new_boots.is_empty(),
+        "the new boot appended behind the legacy file: {rows:?}"
+    );
+    for boot in &new_boots {
+        assert!(
+            boot["capacity"]["key_groups"].is_array(),
+            "new boots carry the live key_groups field: {boot}"
+        );
+    }
+    for row in rows.iter().filter(|row| row["boot_id"] == "boot-legacy") {
+        assert!(
+            row["capacity"].get("key_groups").is_none(),
+            "a surviving legacy record stays ungrouped on disk: {row}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -4890,9 +5021,15 @@ async fn dashboard_and_config_are_served_to_authenticated_users() {
         .await
         .unwrap();
     assert!(dashboard_js.contains("/api/dashboard/now"));
+    assert!(dashboard_js.contains("table-groups"));
+    assert!(dashboard_js.contains("lane_groups"));
     assert!(!dashboard_js.contains("fetch('/metrics')"));
     assert!(!dashboard_js.contains("/api/history?"));
     assert!(!dashboard_js.contains("/dash/config.json"));
+    assert!(
+        html.contains("table-groups"),
+        "the dashboard page renders the group columns"
+    );
 
     let now: serde_json::Value = client()
         .get(proxy.url("/api/dashboard/now"))

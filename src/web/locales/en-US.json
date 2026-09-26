@@ -18,9 +18,21 @@
       "en": "Current rate",
       "hash": "0e80e3ff"
     },
+    "dashboard.capacity.col.group": {
+      "en": "Group",
+      "hash": "34ca0e76"
+    },
     "dashboard.capacity.empty.no_capacity_data": {
       "en": "No capacity data for this time range",
       "hash": "30f6f8f5"
+    },
+    "dashboard.capacity.groupview.default": {
+      "en": "default pool",
+      "hash": "913d0c3f"
+    },
+    "dashboard.capacity.groupview.heading": {
+      "en": "Groups",
+      "hash": "39bbb719"
     },
     "dashboard.capacity.hero.saturation": {
       "en": "Saturation",

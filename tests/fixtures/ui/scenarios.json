@@ -868,6 +868,7 @@
           },
           {
             "labels": {
+              "group": "default",
               "lane": "0"
             },
             "metric": "nimproxy_lane_requests_total",
@@ -875,6 +876,7 @@
           },
           {
             "labels": {
+              "group": "default",
               "lane": "0",
               "status": "429"
             },
@@ -1618,6 +1620,7 @@
           },
           {
             "labels": {
+              "group": "default",
               "lane": "0"
             },
             "metric": "nimproxy_lane_requests_total",
@@ -1625,6 +1628,7 @@
           },
           {
             "labels": {
+              "group": "default",
               "lane": "0",
               "status": "429"
             },
@@ -2358,6 +2362,7 @@
       },
       {
         "labels": {
+          "group": "default",
           "lane": "0"
         },
         "metric": "nimproxy_lane_requests_total",
@@ -2365,6 +2370,7 @@
       },
       {
         "labels": {
+          "group": "default",
           "lane": "0",
           "status": "429"
         },
@@ -2979,6 +2985,12 @@
     "config_revision": 7,
     "default_window_days": 30,
     "history_revision": 11,
+    "lane_groups": [
+      [
+        "g1"
+      ],
+      []
+    ],
     "lanes": 2,
     "metrics": [
       {
@@ -3011,6 +3023,9 @@
     "config_revision": 7,
     "default_window_days": 30,
     "history_revision": 11,
+    "lane_groups": [
+      []
+    ],
     "lanes": 1,
     "metrics": [
       {
@@ -3150,6 +3165,7 @@
       },
       {
         "labels": {
+          "group": "default",
           "lane": "0"
         },
         "metric": "nimproxy_lane_requests_total",
@@ -3157,6 +3173,7 @@
       },
       {
         "labels": {
+          "group": "default",
           "lane": "0",
           "status": "429"
         },
@@ -3797,6 +3814,12 @@
     "config_revision": 7,
     "default_window_days": 30,
     "history_revision": 11,
+    "lane_groups": [
+      [
+        "g1"
+      ],
+      []
+    ],
     "lanes": 2,
     "metrics": [
       {
@@ -3936,6 +3959,7 @@
       },
       {
         "labels": {
+          "group": "default",
           "lane": "0"
         },
         "metric": "nimproxy_lane_requests_total",
@@ -3943,6 +3967,7 @@
       },
       {
         "labels": {
+          "group": "default",
           "lane": "0",
           "status": "429"
         },
@@ -4584,6 +4609,12 @@
     "config_revision": 7,
     "default_window_days": 30,
     "history_revision": 11,
+    "lane_groups": [
+      [
+        "g1"
+      ],
+      []
+    ],
     "lanes": 2,
     "metrics": [
       {
@@ -4723,6 +4754,7 @@
       },
       {
         "labels": {
+          "group": "default",
           "lane": "0"
         },
         "metric": "nimproxy_lane_requests_total",
@@ -4730,6 +4762,7 @@
       },
       {
         "labels": {
+          "group": "default",
           "lane": "0",
           "status": "429"
         },
@@ -5551,6 +5584,7 @@
           },
           {
             "labels": {
+              "group": "default",
               "lane": "0"
             },
             "metric": "nimproxy_lane_requests_total",
@@ -5558,6 +5592,7 @@
           },
           {
             "labels": {
+              "group": "default",
               "lane": "0",
               "status": "429"
             },
@@ -6301,6 +6336,7 @@
           },
           {
             "labels": {
+              "group": "default",
               "lane": "0"
             },
             "metric": "nimproxy_lane_requests_total",
@@ -6308,6 +6344,7 @@
           },
           {
             "labels": {
+              "group": "default",
               "lane": "0",
               "status": "429"
             },
@@ -7041,6 +7078,7 @@
       },
       {
         "labels": {
+          "group": "default",
           "lane": "0"
         },
         "metric": "nimproxy_lane_requests_total",
@@ -7048,6 +7086,7 @@
       },
       {
         "labels": {
+          "group": "default",
           "lane": "0",
           "status": "429"
         },

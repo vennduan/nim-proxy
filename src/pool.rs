@@ -93,6 +93,9 @@ pub enum Reservation {
         base_url: String,
         native: bool,
         inject: bool,
+        /// The granted lane's group labels (may be several; empty is the
+        /// default pool). Rides the grant for metric attribution.
+        groups: Vec<String>,
         /// True when the caller's preferred lane won (conversation affinity hit).
         sticky: bool,
     },
@@ -188,6 +191,15 @@ impl Pool {
         self.lanes[..self.active].iter().map(|l| l.rpm).collect()
     }
 
+    /// Per-lane group labels, in lane order — history capacity blocks and
+    /// the dashboard config so group-labeled series stay attributable.
+    pub fn lane_groups(&self) -> Vec<Vec<String>> {
+        self.lanes[..self.active]
+            .iter()
+            .map(|l| l.groups.clone())
+            .collect()
+    }
+
     /// Point-in-time per-lane view for the Settings key rows.
     pub fn lane_stats(&self) -> Vec<LaneStat> {
         let now = Instant::now();
@@ -268,6 +280,7 @@ impl Pool {
                 base_url: lane.base_url.clone(),
                 native: lane.native,
                 inject: lane.inject,
+                groups: lane.groups.clone(),
                 sticky,
             })
         } else {

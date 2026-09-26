@@ -162,8 +162,12 @@ async fn reserve_slot(
             slot = &mut rx => {
                 histogram!("nimproxy_queue_wait_seconds").record(queued.elapsed().as_secs_f64());
                 if let Ok(slot) = &slot {
-                    counter!("nimproxy_lane_requests_total", "lane" => slot.lane.to_string())
-                        .increment(1);
+                    counter!(
+                        "nimproxy_lane_requests_total",
+                        "lane" => slot.lane.to_string(),
+                        "group" => group_label(&slot.groups)
+                    )
+                    .increment(1);
                 }
                 return slot.ok();
             }
@@ -220,9 +224,21 @@ async fn acquire_model_permit(
 /// settings-driven pool swap lands on the (possibly retired) generation that
 /// made the grant.
 fn enter_cooldown(slot: &Slot, status: &str, backoff: Duration) {
-    counter!("nimproxy_lane_cooldown_total", "lane" => slot.lane.to_string(), "status" => status.to_owned())
-        .increment(1);
+    counter!(
+        "nimproxy_lane_cooldown_total",
+        "lane" => slot.lane.to_string(),
+        "group" => group_label(&slot.groups),
+        "status" => status.to_owned(),
+    )
+    .increment(1);
     slot.pool.penalize(slot.lane, backoff);
+}
+
+/// Metric attribution for a granted lane's group: the first label is the
+/// canonical one (a request enters through a single /{group} surface),
+/// `default` for the ungrouped default pool.
+fn group_label(groups: &[String]) -> String {
+    groups.first().cloned().unwrap_or_else(|| "default".into())
 }
 
 fn record_request(ctx: &Ctx, status: &str) {

@@ -2060,6 +2060,7 @@
           "default_window_days",
           "history_revision",
           "lanes",
+          "lane_groups",
           "metrics",
           "retention_days",
           "rpms",
@@ -2108,6 +2109,16 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "lane_groups": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "description": "Per-lane group labels in lane order; `[]` is the default-pool\nmember. Absent or empty entries are old records read as ungrouped."
           },
           "lanes": {
             "type": "integer",

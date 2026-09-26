@@ -35,6 +35,9 @@ pub struct Slot {
     pub base_url: String,
     pub native: bool,
     pub inject: bool,
+    /// The granted lane's group labels at grant time, for per-group metric
+    /// attribution (`[]` = default pool, or a legacy lane with no labels).
+    pub groups: Vec<String>,
 }
 
 pub struct Dispatcher {
@@ -101,6 +104,7 @@ async fn run(handle: PoolHandle, mut queue: mpsc::UnboundedReceiver<Waiter>) {
                     base_url,
                     native,
                     inject,
+                    groups,
                     sticky,
                 } => {
                     let affinity = match waiter.prefer {
@@ -116,6 +120,7 @@ async fn run(handle: PoolHandle, mut queue: mpsc::UnboundedReceiver<Waiter>) {
                         base_url,
                         native,
                         inject,
+                        groups,
                     };
                     if waiter.reply.send(slot).is_err() {
                         pool.release(lane, stamp);

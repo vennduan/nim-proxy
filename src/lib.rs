@@ -223,6 +223,7 @@ fn capacity_snapshot(pool: &Pool) -> history::CapacitySnapshot {
     history::CapacitySnapshot {
         enabled_lanes: pool.len(),
         rpms: pool.rpms(),
+        lane_groups: pool.lane_groups(),
         capacity_rpm: pool.capacity_rpm(),
     }
 }
@@ -350,6 +351,7 @@ async fn api_dashboard_now(
         default_window_days: config.default_window_days,
         history_revision,
         lanes: pool.len(),
+        lane_groups: pool.lane_groups(),
         metrics: current.metrics,
         retention_days: config.retention_days,
         rpms: pool.rpms(),

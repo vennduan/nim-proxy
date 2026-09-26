@@ -450,6 +450,9 @@ pub struct DashboardNowResponse {
     pub default_window_days: u64,
     pub history_revision: u64,
     pub lanes: usize,
+    /// Per-lane group labels in lane order; `[]` is the default-pool
+    /// member. Absent or empty entries are old records read as ungrouped.
+    pub lane_groups: Vec<Vec<String>>,
     pub metrics: Vec<MetricValue>,
     pub retention_days: u64,
     pub rpms: Vec<usize>,
@@ -1199,10 +1202,14 @@ mod tests {
             ),
             labeled_metric("nimproxy_affinity_total", &[("result", "sticky")], 24.0),
             labeled_metric("nimproxy_affinity_total", &[("result", "spill")], 2.0),
-            labeled_metric("nimproxy_lane_requests_total", &[("lane", "0")], 33.0),
+            labeled_metric(
+                "nimproxy_lane_requests_total",
+                &[("group", "default"), ("lane", "0")],
+                33.0,
+            ),
             labeled_metric(
                 "nimproxy_lane_cooldown_total",
-                &[("lane", "0"), ("status", "429")],
+                &[("group", "default"), ("lane", "0"), ("status", "429")],
                 2.0,
             ),
             labeled_metric(
@@ -1957,6 +1964,7 @@ mod tests {
             default_window_days: 30,
             history_revision: 11,
             lanes: 2,
+            lane_groups: vec![vec!["g1".to_owned()], Vec::new()],
             metrics,
             retention_days: 30,
             rpms: vec![40, 40],
@@ -2044,6 +2052,7 @@ mod tests {
         let mut response = dashboard_now_ui_fixture(false);
         response.capacity_rpm = 40;
         response.lanes = 1;
+        response.lane_groups = vec![Vec::new()];
         response.rpms = vec![40];
         response
     }
@@ -2929,6 +2938,7 @@ mod tests {
                 default_window_days: 30,
                 history_revision: 1,
                 lanes: 1,
+                lane_groups: vec![Vec::new()],
                 metrics: Vec::new(),
                 retention_days: 30,
                 rpms: vec![40],
