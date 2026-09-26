@@ -10623,3 +10623,304 @@ async fn rpm_change_only_touches_the_edited_key_window() {
     );
     proxy.terminate();
 }
+
+// ---------- T6: 联调 + 迁移演练 (legacy data dir -> three mocks) ----------
+
+/// A v0.6.x data dir: the legacy `nim_keys` store shape and the legacy
+/// canonical history shape (capacity without `key_groups`), both exactly as
+/// a 0.6 install wrote them.
+fn legacy_migration_fixture(chat_url: &str) -> std::path::PathBuf {
+    let data_dir = scratch_data_dir();
+    let mut store = StoreOpts::default().json("http://127.0.0.1:1");
+    store["upstream"]["base_url"] = serde_json::json!(chat_url);
+    store["upstream"]["nim_keys"] = serde_json::json!([
+        {"key": "legacy-a-key", "owner": "root", "enabled": true, "rpm": 40},
+        {"key": "legacy-b-key", "owner": "root", "enabled": true, "rpm": 40}
+    ]);
+    std::fs::write(
+        data_dir.join("config.json"),
+        serde_json::to_string_pretty(&store).unwrap(),
+    )
+    .unwrap();
+    let legacy_lines = [
+        r#"{"format":"nimproxy-history","v":1,"kind":"boot","timestamp":1000,"boot_id":"boot-legacy","capacity":{"capacity_rpm":80,"enabled_keys":2,"key_rpms":[40,40]}}"#,
+        r#"{"format":"nimproxy-history","v":1,"kind":"sample","timestamp":2000,"boot_id":"boot-legacy","capacity":{"capacity_rpm":80,"enabled_keys":2,"key_rpms":[40,40]},"state":[{"kind":"counter","metric":"nimproxy_requests_total","labels":{"client":"legacy-client","model":"m","path":"/v1/chat/completions","status":"200"},"value":5.0}]}"#,
+    ];
+    let mut bytes = Vec::new();
+    for line in legacy_lines {
+        bytes.extend_from_slice(line.as_bytes());
+        bytes.push(b'\n');
+    }
+    std::fs::write(data_dir.join("history-v1.jsonl"), bytes).unwrap();
+    data_dir
+}
+
+/// Mirror of `crate::proxy::affinity` (the test cannot name lanes by
+/// string, so the pinned conversation is found by construction): hash the
+/// same fields the proxy does and pick one that lands on a group member.
+fn affinity_lane(body: &serde_json::Value, lanes: usize) -> usize {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    body.get("model")
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .hash(&mut h);
+    for msg in body
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .unwrap()
+        .iter()
+        .take(2)
+    {
+        msg.to_string().hash(&mut h);
+    }
+    (h.finish() % lanes as u64) as usize
+}
+
+/// The full T6 drill: boot from a legacy-shape data dir (config + history),
+/// trigger the one-way legacy-config migration, then exercise 429 rotation,
+/// sticky affinity, group isolation, native pass-through, and the
+/// chat-on-all-native rejection against the three mocks; prove the legacy
+/// history records survive a restart.
+#[tokio::test]
+async fn t6_legacy_data_dir_migrates_and_all_behaviors_hold() {
+    let chat = start_mock().await;
+    let anthropic = start_native_mock().await;
+    let anthropic_bytes = serde_json::to_vec(&serde_json::json!({
+        "model": "mock/model-a",
+        "max_tokens": 8,
+        "messages": [{"role": "user", "content": "g6 native"}]
+    }))
+    .unwrap();
+    let data_dir = legacy_migration_fixture(&chat.url);
+
+    let mut proxy = start_proxy_in(data_dir.clone(), &[]).await;
+    // 1) Boot: the legacy store loads and migrates in memory; the legacy
+    // history file replayed without rejection.
+    let root = login(&proxy).await;
+    assert_eq!(
+        dashboard_now(&proxy, &root).await["lane_groups"],
+        serde_json::json!([[], []]),
+        "legacy store booted: both migrated keys are ungrouped default lanes"
+    );
+
+    // 2) The one-way migration: the first settings commit rewrites the
+    // legacy `nim_keys` block into flat `keys` (state carriers ride
+    // along), labelling the two legacy keys and adding a native key only
+    // the anthropic group can use.
+    let (status, v) = post_json(
+        &proxy,
+        &root,
+        "/api/settings/nim-keys",
+        serde_json::json!({"add": {"key": "t6-anthropic", "base_url": anthropic.url.clone(), "native": true, "inject": false, "groups": ["g-native"], "rpm": 20}}),
+    )
+    .await;
+    assert_eq!(status, 200, "migration commit: {v}");
+    let on_disk = std::fs::read_to_string(proxy.data_dir.join("config.json")).unwrap();
+    assert!(
+        !on_disk.contains("nim_keys"),
+        "legacy block is gone: {on_disk}"
+    );
+    let store: serde_json::Value = serde_json::from_str(&on_disk).unwrap();
+    let key_of = |k: &str| {
+        store["upstream"]["keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["key"] == k)
+            .unwrap()
+    };
+    let migrated_a = key_of("legacy-a-key");
+    assert_eq!(migrated_a["groups"], serde_json::json!([]));
+    assert_eq!(migrated_a["base_url"], chat.url);
+    assert_eq!(key_of("legacy-b-key")["enabled"], serde_json::json!(true));
+    let t6 = key_of("t6-anthropic");
+    assert_eq!(t6["native"], serde_json::json!(true));
+    assert_eq!(t6["groups"], serde_json::json!(["g-native"]));
+    let fp_a = fp("legacy-a-key");
+    for rpm in [0usize, 100_001usize] {
+        let (status, v) = post_json(
+            &proxy,
+            &root,
+            "/api/settings/nim-keys",
+            serde_json::json!({"set": {"fingerprint": fp_a, "rpm": rpm}}),
+        )
+        .await;
+        assert_eq!(
+            status, 400,
+            "out-of-range rpm {rpm} is rejected at commit: {v}"
+        );
+    }
+    let (status, v) = post_json(
+        &proxy,
+        &root,
+        "/api/settings/nim-keys",
+        serde_json::json!({"set": {"fingerprint": fp_a, "groups": ["g-chat"]}}),
+    )
+    .await;
+    assert_eq!(status, 200, "the labels ride the same commit: {v}");
+    let (status, v) = post_json(
+        &proxy,
+        &root,
+        "/api/settings/nim-keys",
+        serde_json::json!({"set": {"fingerprint": fp("legacy-b-key"), "groups": ["g-chat"]}}),
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(
+        dashboard_now(&proxy, &root).await["lane_groups"],
+        serde_json::json!([["g-chat"], ["g-chat"], ["g-native"]]),
+        "the migrated pool now carries its group labels"
+    );
+
+    // 3) Group isolation: /g-chat serves only from the two legacy lanes.
+    let g_chat: BTreeSet<&str> = BTreeSet::from(["legacy-a-key", "legacy-b-key"]);
+    for i in 0..2 {
+        let r = client()
+            .post(proxy.url("/g-chat/v1/chat/completions"))
+            .json(&chat_body(&format!("iso {i}"), false))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200, "g-chat chat must serve: {i}");
+        let _ = r.bytes().await;
+    }
+    assert!(chat
+        .state
+        .hit_keys()
+        .iter()
+        .all(|k| g_chat.contains(k.as_str())));
+    assert_eq!(anthropic.state.hit_count(), 0, "no isolation leak");
+
+    // 4) Typed rejections pre-queue: an unknown group and the
+    // all-native chat surface.
+    let v = client()
+        .post(proxy.url("/g-none/v1/chat/completions"))
+        .json(&chat_body("x", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        v.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "group_empty",
+        "unknown groups reject with group_empty"
+    );
+    let v = client()
+        .post(proxy.url("/g-native/v1/chat/completions"))
+        .json(&chat_body("x", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(v.status().as_u16(), 400, "all-native chat rejects");
+    assert_eq!(
+        v.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "chat_all_native"
+    );
+
+    // 5) Native pass-through: /g-native/v1/messages is byte-exact, and the
+    // sticky pin (lane 2) keeps the conversation on that one lane.
+    for i in 0..2 {
+        let r = client()
+            .post(proxy.url("/g-native/v1/messages"))
+            .header("content-type", "application/json")
+            .body(anthropic_bytes.clone())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200, "g-native messages must serve: {i}");
+        let _ = r.bytes().await;
+    }
+    {
+        let hits = anthropic.state.hits.lock().unwrap().clone();
+        assert_eq!(hits.len(), 2, "both native requests landed here");
+        for hit in &hits {
+            assert_eq!(hit.x_api_key.as_deref(), Some("t6-anthropic"));
+            assert!(hit.authorization.is_none(), "no Bearer on a native lane");
+            assert_eq!(hit.body, anthropic_bytes, "byte-exact pass-through");
+        }
+    }
+
+    // 6) Sticky affinity in-group: the conversation's pin lands on lane 0
+    // (legacy-a-key), a /g-chat member, so it serves every turn.
+    let convo = (0..64)
+        .into_iter()
+        .find(|i| affinity_lane(&chat_body(&format!("sticky-conv-{i}"), false), 3) == 0)
+        .expect("a lane-0-pinned conversation exists");
+    for _ in 0..2 {
+        let r = client()
+            .post(proxy.url("/g-chat/v1/chat/completions"))
+            .json(&chat_body(&format!("sticky-conv-{convo}"), false))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let _ = r.bytes().await;
+    }
+    let keys = chat.state.hit_keys();
+    assert_eq!(
+        keys[keys.len() - 1],
+        "legacy-a-key",
+        "the pinned conversation stayed on its lane: {keys:?}"
+    );
+    assert_eq!(keys[keys.len() - 2], "legacy-a-key");
+
+    // 7) 429 rotation rides out inside the group.
+    chat.state.push(Behavior::RateLimited(1));
+    let r = client()
+        .post(proxy.url("/g-chat/v1/chat/completions"))
+        .json(&chat_body("rotation", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "the group rides out a 429");
+    let _ = r.bytes().await;
+    let keys = chat.state.hit_keys();
+    assert_ne!(
+        keys[keys.len() - 2],
+        keys[keys.len() - 1],
+        "429 failed over to a different key: {keys:?}"
+    );
+
+    // 8) The legacy history record still reads back ungrouped; the restart
+    // appends behind it with the live group labels.
+    for row in read_canonical_history(&data_dir.join("history-v1.jsonl"))
+        .iter()
+        .filter(|row| row["boot_id"] == "boot-legacy")
+    {
+        assert!(
+            row["capacity"].get("key_groups").is_none(),
+            "the legacy record stays ungrouped on disk: {row}"
+        );
+    }
+    proxy = restart(proxy, &[]).await;
+    let root = login(&proxy).await;
+    assert_eq!(
+        dashboard_now(&proxy, &root).await["lane_groups"],
+        serde_json::json!([["g-chat"], ["g-chat"], ["g-native"]]),
+        "restart: the migrated pool keeps its group labels"
+    );
+    let rows = read_canonical_history(&data_dir.join("history-v1.jsonl"));
+    let new_boots: Vec<_> = rows
+        .iter()
+        .filter(|row| row["kind"] == "boot" && row["boot_id"] != "boot-legacy")
+        .collect();
+    assert!(
+        !new_boots.is_empty(),
+        "the restart appended behind the legacy file: {rows:?}"
+    );
+    for boot in &new_boots {
+        assert!(
+            boot["capacity"]["key_groups"].is_array(),
+            "new boots carry the live key_groups field: {boot}"
+        );
+    }
+    let r = client()
+        .post(proxy.url("/g-chat/v1/chat/completions"))
+        .json(&chat_body("after restart", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "the migrated store still routes");
+    proxy.terminate();
+}
