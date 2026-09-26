@@ -801,6 +801,35 @@ function renderCapacity(c) {
   lineChart($('chart-cooldowns'), cooldownSeries, fmt, { height: 150 });
   legend($('legend-cooldowns'), cooldownSeries);
 
+  /* Per-group columns: one row per group label plus the default pool
+     (lanes without a group). Lane indices come from cfg.lane_groups, the
+     same lane order as cfg.rpms; old records read as ungrouped. */
+  const groupRows = new Map();
+  const grpKey = g => g || '-';
+  const grpBucket = i => {
+    if (!groupRows.has(i)) groupRows.set(i, { i, cur: 0, rate: 0 });
+    return groupRows.get(i);
+  };
+  Array.from({ length: cfg.lanes }, (_, i) => i).forEach(i => {
+    const grp = (cfg.lane_groups[i] || [])[0];
+    const bucket = grpBucket(grp);
+    bucket.cur += laneWindow.get(String(i)) || 0;
+    bucket.rate += nowLaneRates.get(String(i)) || 0;
+  });
+  const groups = [...groupRows.values()]
+    .sort((a, b) => b.cur - a.cur || (grpKey(a.i) < grpKey(b.i) ? -1 : 1));
+  sortTable($('table-groups'), 'groups', [
+    { label: catalogMessage('dashboard.capacity.col.group'), align: 'l', str: true },
+    { label: catalogMessage('dashboard.common.col.requests') },
+    { label: catalogMessage('dashboard.capacity.col.current_rate') },
+  ], groups.map(g => ({
+    vals: [grpKey(g.i), g.cur, g.rate],
+    cells: [g.i === '-'
+      ? escapeHtml(catalogMessage('dashboard.capacity.groupview.default'))
+      : escapeHtml(g.i),
+      fmt(g.cur), fmt(g.rate)],
+  })), { defaultIdx: 1, maxH: 240, minW: 360, empty: catalogMessage('dashboard.common.empty.no_keys_configured') });
+
   sortTable($('table-lanes'), 'lanes', [
     { label: catalogMessage('dashboard.common.col.key'), align: 'l', str: true }, { label: catalogMessage('dashboard.common.col.requests') }, { label: catalogMessage('dashboard.common.col.share') },
     { label: catalogMessage('dashboard.capacity.col.current_rate') }, { label: catalogMessage('dashboard.capacity.col.429s') }, { label: catalogMessage('dashboard.common.status.upstream_error_cooldowns') },
@@ -838,7 +867,7 @@ async function fetchRange(from, to) {
 function applyNowConfig(next) {
   cfg = {
     version: next.version || '', started: +next.started || Date.now()/1000,
-    lanes: +next.lanes || 0, rpms: next.rpms || [], rpm: Math.max(0, ...(next.rpms || [40])),
+    lanes: +next.lanes || 0, rpms: next.rpms || [], lane_groups: next.lane_groups || [], rpm: Math.max(0, ...(next.rpms || [40])),
     capacity_rpm: +next.capacity_rpm || 0,
     auth: !!next.auth,
     default_window_days: +next.default_window_days || 30,

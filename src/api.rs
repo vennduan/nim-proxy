@@ -272,16 +272,26 @@ pub struct ClientKeyRow {
 /// `cooldown_ms` are null for a disabled key (it holds no lane).
 #[derive(Serialize, ToSchema)]
 pub struct NimKeyRow {
+    /// Endpoint this key talks to (per-key, may differ from the global
+    /// upstream base_url).
+    pub base_url: String,
     pub cooldown_ms: Option<u64>,
     pub enabled: bool,
     /// First 8 hex chars of SHA-256(key) — the key's public identifier.
     pub fingerprint: String,
+    /// Gating labels: which `/gN` routes may reach this key.
+    pub groups: Vec<String>,
     /// True for the superuser's only enabled key: the pool floor, which
     /// `config::validate` refuses to remove or disable.
     pub guarded: bool,
+    /// Gates the NIM stream_options compatibility patch (off for pure
+    /// routing providers).
+    pub inject: bool,
     pub in_window: Option<usize>,
     pub lane: Option<usize>,
     pub last4: String,
+    /// Anthropic-native endpoint: serves /v1/messages pass-through only.
+    pub native: bool,
     pub owner: String,
     pub rpm: usize,
 }
@@ -440,6 +450,9 @@ pub struct DashboardNowResponse {
     pub default_window_days: u64,
     pub history_revision: u64,
     pub lanes: usize,
+    /// Per-lane group labels in lane order; `[]` is the default-pool
+    /// member. Absent or empty entries are old records read as ungrouped.
+    pub lane_groups: Vec<Vec<String>>,
     pub metrics: Vec<MetricValue>,
     pub retention_days: u64,
     pub rpms: Vec<usize>,
@@ -1189,10 +1202,14 @@ mod tests {
             ),
             labeled_metric("nimproxy_affinity_total", &[("result", "sticky")], 24.0),
             labeled_metric("nimproxy_affinity_total", &[("result", "spill")], 2.0),
-            labeled_metric("nimproxy_lane_requests_total", &[("lane", "0")], 33.0),
+            labeled_metric(
+                "nimproxy_lane_requests_total",
+                &[("group", "default"), ("lane", "0")],
+                33.0,
+            ),
             labeled_metric(
                 "nimproxy_lane_cooldown_total",
-                &[("lane", "0"), ("status", "429")],
+                &[("group", "default"), ("lane", "0"), ("status", "429")],
                 2.0,
             ),
             labeled_metric(
@@ -1662,24 +1679,32 @@ mod tests {
             mode: Mode::Keyed,
             nim_keys: vec![
                 NimKeyRow {
+                    base_url: "https://integrate.api.nvidia.com".into(),
                     cooldown_ms: Some(0),
                     enabled: true,
                     fingerprint: "f17e0001".into(),
+                    groups: Vec::new(),
                     guarded: false,
+                    inject: true,
                     in_window: Some(1),
                     lane: Some(0),
                     last4: "wxyz".into(),
+                    native: false,
                     owner: "fixture-user".into(),
                     rpm: 40,
                 },
                 NimKeyRow {
+                    base_url: "https://integrate.api.nvidia.com".into(),
                     cooldown_ms: Some(0),
                     enabled: true,
                     fingerprint: "5a000001".into(),
+                    groups: Vec::new(),
                     guarded: false,
+                    inject: true,
                     in_window: Some(0),
                     lane: Some(1),
                     last4: "root".into(),
+                    native: false,
                     owner: "fixture-superuser".into(),
                     rpm: 40,
                 },
@@ -1939,6 +1964,7 @@ mod tests {
             default_window_days: 30,
             history_revision: 11,
             lanes: 2,
+            lane_groups: vec![vec!["g1".to_owned()], Vec::new()],
             metrics,
             retention_days: 30,
             rpms: vec![40, 40],
@@ -2026,6 +2052,7 @@ mod tests {
         let mut response = dashboard_now_ui_fixture(false);
         response.capacity_rpm = 40;
         response.lanes = 1;
+        response.lane_groups = vec![Vec::new()];
         response.rpms = vec![40];
         response
     }
@@ -2789,13 +2816,17 @@ mod tests {
         sorted(
             "NimKeyRow",
             &NimKeyRow {
+                base_url: "https://integrate.api.nvidia.com".into(),
                 cooldown_ms: Some(0),
                 enabled: true,
                 fingerprint: "abcd1234".into(),
+                groups: Vec::new(),
                 guarded: false,
+                inject: true,
                 in_window: Some(0),
                 lane: Some(0),
                 last4: "wxyz".into(),
+                native: false,
                 owner: "root".into(),
                 rpm: 40,
             },
@@ -2907,6 +2938,7 @@ mod tests {
                 default_window_days: 30,
                 history_revision: 1,
                 lanes: 1,
+                lane_groups: vec![Vec::new()],
                 metrics: Vec::new(),
                 retention_days: 30,
                 rpms: vec![40],
@@ -2982,18 +3014,22 @@ mod tests {
     fn lane_state_is_null_for_a_benched_key() {
         assert_eq!(
             serde_json::to_string(&NimKeyRow {
+                base_url: "https://integrate.api.nvidia.com".into(),
                 cooldown_ms: None,
                 enabled: false,
                 fingerprint: "abcd1234".into(),
+                groups: Vec::new(),
                 guarded: false,
+                inject: true,
                 in_window: None,
                 lane: None,
                 last4: "wxyz".into(),
+                native: false,
                 owner: "root".into(),
                 rpm: 40,
             })
             .unwrap(),
-            r#"{"cooldown_ms":null,"enabled":false,"fingerprint":"abcd1234","guarded":false,"in_window":null,"lane":null,"last4":"wxyz","owner":"root","rpm":40}"#
+            r#"{"base_url":"https://integrate.api.nvidia.com","cooldown_ms":null,"enabled":false,"fingerprint":"abcd1234","groups":[],"guarded":false,"inject":true,"in_window":null,"lane":null,"last4":"wxyz","native":false,"owner":"root","rpm":40}"#
         );
     }
 

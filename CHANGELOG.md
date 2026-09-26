@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Multi-vendor pure-routing key pool: the global upstream is now a flat set of
+  keys — no provider concept. Each key carries its own `base_url`, an
+  `native` flag (Anthropic-style endpoints), an `inject` flag (gate the NIM
+  `stream_options` compatibility patch per key), and `groups` routing labels;
+  rpm is validated in the range 1–100000. `/{group}/v1/…` routes resolve
+  against the group's labelled lanes only: native lanes byte-passthrough the
+  client's Anthropic requests on the messages surface, chat lanes ride the
+  bridge, and the chat surface on an all-native group fails fast with a typed
+  4xx (`group_empty` / `group_no_models` / `chat_all_native`) instead of
+  queueing. Conversation sticky affinity, 429 lane failover, and per-lane
+  pacing all hold inside a group.
+- Settings and dashboard gained the group view: key rows show native/inject/
+  groups, `POST /api/settings/nim-keys` manages the flat keys, and the
+  dashboard aggregates members and enabled-rpm per label. `nimproxy_lane_*`
+  series gain a `group` label (the granted lane's first label, `default`
+  when ungrouped) — a wire-format addition to existing series; canonical
+  history gains `capacity.key_groups` / `lane_groups` (absent in old
+  records, which read as ungrouped).
+- Legacy stores keep booting: the v0.6.x `nim_keys` config block and
+  pre-group `history-v1.jsonl` files load unchanged and are treated as
+  ungrouped; the first settings commit migrates the config one-way to the
+  flat `keys` shape (disabled legacy keys stay as state carriers).
+- Settings access section: the key list is now organized by group label —
+  each key renders once, under its first group, with unlabelled keys in a
+  `Default pool` section, and every section collapses. Each row is directly
+  editable in place: `native` and `inject` ride per-row toggles and endpoint
+  and group labels are change-on-commit row inputs like rpm (empty endpoint
+  means "inherit the global base_url"), so legacy keys can get an own
+  endpoint or native routing after creation with no drawer or save button.
+  The standalone Groups overview card is gone — the grouped list replaced it.
+
+### Added
+
 - New `POST /v1/messages` Anthropic-compatible bridge: requests are converted
   to the OpenAI chat dialect, paced through the shared key pool exactly like
   the `/v1` passthrough, and answered in the Anthropic dialect. Non-2xx
