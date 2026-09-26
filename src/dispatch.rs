@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use metrics::{counter, gauge};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::pool::{Pool, PoolHandle, Reservation};
+use crate::pool::{LaneFilter, Pool, PoolHandle, Reservation};
 
 /// Minimum gap between consecutive slot grants. Caps burst *concurrency*
 /// (a cold pool can grant its full aggregate RPM instantly — hundreds of
@@ -25,12 +25,19 @@ use crate::pool::{Pool, PoolHandle, Reservation};
 /// far beyond any realistic key pool's aggregate RPM.
 const GRANT_GAP: Duration = Duration::from_millis(25);
 
-/// A granted reservation: the key to send with, and the pool that granted it
-/// so follow-up cooldown/release ops route to the right generation.
+/// A granted reservation: the key to send with, the routing attributes that
+/// lane carried at grant time, and the pool that granted it so follow-up
+/// cooldown/release ops route to the right generation.
 pub struct Slot {
     pub pool: Arc<Pool>,
     pub lane: usize,
     pub key: String,
+    pub base_url: String,
+    pub native: bool,
+    pub inject: bool,
+    /// The granted lane's group labels at grant time, for per-group metric
+    /// attribution (`[]` = default pool, or a legacy lane with no labels).
+    pub groups: Vec<String>,
 }
 
 pub struct Dispatcher {
@@ -41,6 +48,7 @@ struct Waiter {
     reply: oneshot::Sender<Slot>,
     deadline: Instant,
     prefer: Option<usize>,
+    filter: LaneFilter,
 }
 
 impl Dispatcher {
@@ -53,14 +61,21 @@ impl Dispatcher {
     /// Join the queue. The receiver resolves to a reserved [`Slot`], or
     /// errors if no slot can open before `deadline`. Dropping the receiver
     /// leaves the queue; a slot granted to an abandoned waiter is returned to
-    /// the pool.
-    pub fn acquire(&self, deadline: Instant, prefer: Option<usize>) -> oneshot::Receiver<Slot> {
+    /// the pool. `filter` narrows the candidate lanes (group label, native
+    /// exclusion); the default filter is the whole pool.
+    pub fn acquire(
+        &self,
+        deadline: Instant,
+        prefer: Option<usize>,
+        filter: LaneFilter,
+    ) -> oneshot::Receiver<Slot> {
         let (reply, rx) = oneshot::channel();
         gauge!("nimproxy_queue_depth").increment(1.0);
         let _ = self.queue.send(Waiter {
             reply,
             deadline,
             prefer,
+            filter,
         });
         rx
     }
@@ -78,7 +93,7 @@ async fn run(handle: PoolHandle, mut queue: mpsc::UnboundedReceiver<Waiter>) {
             let (pool, reservation) = {
                 let guard = handle.read().unwrap();
                 let pool = guard.clone();
-                let r = pool.reserve(waiter.prefer);
+                let r = pool.reserve_filtered(waiter.prefer, &waiter.filter);
                 (pool, r)
             };
             match reservation {
@@ -86,6 +101,10 @@ async fn run(handle: PoolHandle, mut queue: mpsc::UnboundedReceiver<Waiter>) {
                     lane,
                     key,
                     stamp,
+                    base_url,
+                    native,
+                    inject,
+                    groups,
                     sticky,
                 } => {
                     let affinity = match waiter.prefer {
@@ -98,6 +117,10 @@ async fn run(handle: PoolHandle, mut queue: mpsc::UnboundedReceiver<Waiter>) {
                         pool: pool.clone(),
                         lane,
                         key,
+                        base_url,
+                        native,
+                        inject,
+                        groups,
                     };
                     if waiter.reply.send(slot).is_err() {
                         pool.release(lane, stamp);
@@ -161,6 +184,10 @@ mod tests {
             (0..lanes)
                 .map(|i| crate::pool::LaneSpec {
                     key: format!("key{i}"),
+                    base_url: "https://upstream.invalid".into(),
+                    native: false,
+                    inject: true,
+                    groups: Vec::new(),
                     rpm,
                     enabled: true,
                 })
@@ -172,8 +199,14 @@ mod tests {
     async fn grants_slots_in_order_while_capacity_remains() {
         let d = Dispatcher::new(handle(2, 1));
         let deadline = Instant::now() + Duration::from_secs(5);
-        let a = d.acquire(deadline, None).await.expect("first slot");
-        let b = d.acquire(deadline, None).await.expect("second slot");
+        let a = d
+            .acquire(deadline, None, LaneFilter::default())
+            .await
+            .expect("first slot");
+        let b = d
+            .acquire(deadline, None, LaneFilter::default())
+            .await
+            .expect("second slot");
         assert_eq!(a.lane, 0);
         assert_eq!(b.lane, 1);
     }
@@ -182,9 +215,14 @@ mod tests {
     async fn fails_fast_when_no_slot_can_open_before_deadline() {
         let d = Dispatcher::new(handle(1, 1));
         let deadline = Instant::now() + Duration::from_millis(200);
-        d.acquire(deadline, None).await.expect("first slot");
+        d.acquire(deadline, None, LaneFilter::default())
+            .await
+            .expect("first slot");
         // Lane is at capacity for ~60s, far past the deadline.
-        assert!(d.acquire(deadline, None).await.is_err());
+        assert!(d
+            .acquire(deadline, None, LaneFilter::default())
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -194,9 +232,12 @@ mod tests {
         // Deadline beyond the ~61s window so the waiter queues instead of
         // failing fast.
         let deadline = Instant::now() + Duration::from_secs(120);
-        let first = d.acquire(deadline, None).await.expect("first slot");
+        let first = d
+            .acquire(deadline, None, LaneFilter::default())
+            .await
+            .expect("first slot");
         let started = Instant::now();
-        let pending = d.acquire(deadline, None);
+        let pending = d.acquire(deadline, None, LaneFilter::default());
         tokio::time::sleep(Duration::from_millis(100)).await;
         // Swap in a rebuilt pool with double the rpm — carried state keeps the
         // spent slot, the new headroom serves the waiter.
@@ -204,6 +245,10 @@ mod tests {
             let mut guard = h.write().unwrap();
             let rebuilt = guard.rebuild(vec![crate::pool::LaneSpec {
                 key: "key0".into(),
+                base_url: "https://upstream.invalid".into(),
+                native: false,
+                inject: true,
+                groups: Vec::new(),
                 rpm: 2,
                 enabled: true,
             }]);

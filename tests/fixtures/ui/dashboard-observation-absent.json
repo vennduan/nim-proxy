@@ -186,6 +186,7 @@
         },
         {
           "labels": {
+            "group": "default",
             "lane": "0"
           },
           "metric": "nimproxy_lane_requests_total",
@@ -193,6 +194,7 @@
         },
         {
           "labels": {
+            "group": "default",
             "lane": "0",
             "status": "429"
           },
@@ -886,6 +888,7 @@
     },
     {
       "labels": {
+        "group": "default",
         "lane": "0"
       },
       "metric": "nimproxy_lane_requests_total",
@@ -893,6 +896,7 @@
     },
     {
       "labels": {
+        "group": "default",
         "lane": "0",
         "status": "429"
       },

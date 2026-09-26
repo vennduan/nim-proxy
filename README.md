@@ -316,8 +316,8 @@ The build and release path is hardened to the OpenSSF baseline (scored weekly by
 | `nimproxy_json_mode_total` | client | Structured-output (JSON-mode) requests |
 | `nimproxy_queue_wait_seconds` | — | Time waiting for a rate-limit slot |
 | `nimproxy_queue_depth` / `nimproxy_active_requests` | — | Live load gauges |
-| `nimproxy_lane_requests_total` | lane | Requests per key lane |
-| `nimproxy_lane_cooldown_total` | lane, status | Upstream 429/5xx/connect per lane |
+| `nimproxy_lane_requests_total` | lane, group | Requests per key lane (group = the granted lane's first label, `default` when ungrouped) |
+| `nimproxy_lane_cooldown_total` | lane, group, status | Upstream 429/5xx/connect per lane and group |
 | `nimproxy_affinity_total` | result | Conversation routing: `sticky` / `spill` / `none` |
 | `nimproxy_unauthorized_total` | — | Rejected API requests |
 | `nimproxy_login_failures_total` | — | Failed dashboard logins |

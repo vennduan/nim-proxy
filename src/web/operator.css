@@ -266,6 +266,9 @@ body.on-settings .tright, body.on-settings #custom { display: none; }
 .kstate { margin-left: auto; font: 500 11.5px var(--mono); color: var(--ink-25); flex: none; white-space: nowrap; }
 .klock { color: var(--ink-3); display: inline-flex; padding: 5px 8px; cursor: help; flex: none; }
 .tag { font: 600 10px var(--mono); border-radius: 99px; padding: 2px 8px; background: rgba(118,185,0,0.14); color: var(--green-lt); vertical-align: middle; }
+.gchip { font: 600 10px var(--mono); border-radius: 99px; padding: 2px 8px; background: rgba(80,140,255,0.14); color: var(--blue-lt, #7aa0ff); vertical-align: middle; }
+.kchk { display: inline-flex; align-items: center; gap: 6px; font: 500 11px var(--mono); color: var(--ink-25); flex: none; }
+.kchk input { accent-color: var(--green); }
 .addrow { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 14px; }
 .serr { font: 400 11.5px var(--mono); color: var(--red); min-height: 1.2em; margin-top: 8px; }
 .serr.ok { color: var(--green-lt); }
