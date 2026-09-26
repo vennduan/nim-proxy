@@ -1106,10 +1106,6 @@
       "en": "Revoke",
       "hash": "87e6d00b"
     },
-    "settings.common.cancel": {
-      "en": "Cancel",
-      "hash": "19766ed6"
-    },
     "settings.common.done": {
       "en": "Done",
       "hash": "11a6767d"
@@ -1186,14 +1182,6 @@
       "en": "default endpoint",
       "hash": "579b6266"
     },
-    "settings.key.expand": {
-      "en": "Edit this key",
-      "hash": "b6def27a"
-    },
-    "settings.key.group_title": {
-      "en": "Group label: requests to this /gN route reach the key",
-      "hash": "647560e2"
-    },
     "settings.key.groups": {
       "en": "Group labels, comma-separated",
       "hash": "d21d5e8b"
@@ -1241,10 +1229,6 @@
     "settings.key.off": {
       "en": "Disabled",
       "hash": "75081b59"
-    },
-    "settings.key.own_endpoint": {
-      "en": "own endpoint",
-      "hash": "e12a1886"
     },
     "settings.key.placeholder": {
       "en": "Paste a new NIM API key (nvapi-…)",

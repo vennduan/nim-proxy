@@ -33,11 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flat `keys` shape (disabled legacy keys stay as state carriers).
 - Settings access section: the key list is now organized by group label —
   each key renders once, under its first group, with unlabelled keys in a
-  `Default pool` section, and every section collapses. Each key row gained
-  an inline editor for `native`, `inject`, endpoint, and group labels (one
-  save; an empty endpoint means "inherit the global base_url"), so legacy
-  keys can get an own endpoint or native routing after creation. The
-  standalone Groups overview card is gone — the grouped list replaced it.
+  `Default pool` section, and every section collapses. Each row is directly
+  editable in place: `native` and `inject` ride per-row toggles and endpoint
+  and group labels are change-on-commit row inputs like rpm (empty endpoint
+  means "inherit the global base_url"), so legacy keys can get an own
+  endpoint or native routing after creation with no drawer or save button.
+  The standalone Groups overview card is gone — the grouped list replaced it.
 
 ### Added
 

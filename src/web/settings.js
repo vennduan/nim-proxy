@@ -38,7 +38,6 @@ async function loadSettings(afterSave = false) {
 }
 
 const TRASH = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.8 9.5h6.4L12 4M6.5 7v4M9.5 7v4"/></svg>';
-const PENCIL = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 1.5a2 2 0 012.8 2.8L5 13.6l-3.3 1 1-3.3L11.5 1.5z"/></svg>';
 const CHEVDN = '<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 6l4.5 4.5L12.5 6"/></svg>';
 const LOCK = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="7" width="9" height="6.5" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/></svg>';
 const SICONS = {
@@ -109,21 +108,6 @@ function renderAccess() {
     }
   };
   const globalUrl = SET.server ? SET.server.base_url : '';
-  const rowEditor = (k, i) => `
-      <div class="kedit">
-        <div data-style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">
-          <label class="kchk"><input type="checkbox" data-edit-native="${i}"${k.native ? ' checked' : ''}><span data-i18n="settings.key.native"></span></label>
-          <label class="kchk"><input type="checkbox" data-edit-inject="${i}"${k.inject ? ' checked' : ''}><span data-i18n="settings.key.inject"></span></label>
-        </div>
-        <div data-style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-          <input class="sin" type="text" data-edit-base="${i}" value="${escapeHtml(k.base_url === globalUrl ? '' : k.base_url)}" placeholder="${escapeHtml(catalogMessage('settings.key.endpoint_default'))}" data-i18n-attr="aria-label:settings.key.endpoint" spellcheck="false" data-style="flex:1;min-width:180px">
-          <input class="sin" type="text" data-edit-groups="${i}" value="${escapeHtml((k.groups || []).join(', '))}" placeholder="${escapeHtml(catalogMessage('settings.key.groups_ph'))}" data-i18n-attr="aria-label:settings.key.groups" spellcheck="false" data-style="width:120px">
-        </div>
-        <div data-style="display:flex;gap:8px;margin-top:8px;align-items:center">
-          <button class="pbtn" data-kedit="${i}" data-i18n="settings.common.save"></button>
-          <button class="gbtn" data-keditcancel="${i}" data-i18n="settings.common.cancel"></button>
-        </div>
-      </div>`;
   /* Keys sit under their FIRST group label (a key is shown once; wanting it
      in two groups means listing it twice). The empty section is the default
      pool — /v1 routes reach its members, /gN routes do not. */
@@ -142,21 +126,23 @@ function renderAccess() {
       <div data-style="min-width:0">
         <div class="kmask">nvapi-••••${escapeHtml(k.last4)}${ownerChip(k.owner)}</div>
         <div class="kmeta">fp ${escapeHtml(String(k.fingerprint).slice(0, 8))} · ${k.lane != null ? escapeHtml(catalogMessage('settings.key.slot', { n: NUM_GROUPED.format(+k.lane + 1) })) : k.enabled ? escapeHtml(catalogMessage('settings.key.state.unassigned')) : escapeHtml(catalogMessage('settings.key.off'))}</div>
-        <div data-style="display:flex;gap:4px;flex-wrap:wrap;margin-top:3px">
-          ${k.native ? `<span class="gchip" data-i18n-attr="title:settings.key.native_title">${escapeHtml(catalogMessage('settings.key.native'))}</span>` : ''}
-          ${k.inject ? '' : `<span class="gchip" data-i18n-attr="title:settings.key.pure_routing_title">${escapeHtml(catalogMessage('settings.key.pure_routing'))}</span>`}
-          ${(k.groups || []).map(g => `<span class="gchip" data-i18n-attr="title:settings.key.group_title">${escapeHtml('/' + g)}</span>`).join('')}
-          ${k.base_url !== globalUrl ? `<span class="gchip" title="${escapeHtml(k.base_url)}">${escapeHtml(catalogMessage('settings.key.own_endpoint'))}</span>` : ''}
-        </div>
       </div>
+      <input class="sin" type="text" data-edit-base="${i}" value="${escapeHtml(k.base_url === globalUrl ? '' : k.base_url)}" placeholder="${escapeHtml(catalogMessage('settings.key.endpoint_default'))}" data-i18n-attr="aria-label:settings.key.endpoint" spellcheck="false" data-style="flex:1;min-width:180px">
+      <input class="sin" type="text" data-edit-groups="${i}" value="${escapeHtml((k.groups || []).join(', '))}" placeholder="${escapeHtml(catalogMessage('settings.key.groups_ph'))}" data-i18n-attr="aria-label:settings.key.groups" spellcheck="false" data-style="width:120px;flex:0 1 auto">
+      <label class="ktog${k.native ? ' on' : ''}" data-i18n-attr="title:settings.key.native_title" data-style="flex:none">
+        <input type="checkbox" data-edit-native="${i}"${k.native ? ' checked' : ''} data-i18n-attr="aria-label:settings.key.native_title">
+        <span data-i18n="settings.key.native"></span>
+      </label>
+      <label class="ktog${k.inject ? ' on' : ''}" data-i18n-attr="title:${k.inject ? 'settings.key.inject' : 'settings.key.pure_routing_title'}" data-style="flex:none">
+        <input type="checkbox" data-edit-inject="${i}"${k.inject ? ' checked' : ''} data-i18n-attr="aria-label:${k.inject ? 'settings.key.inject' : 'settings.key.pure_routing_title'}">
+        <span data-i18n="${k.inject ? 'settings.key.inject' : 'settings.key.pure_routing'}"></span>
+      </label>
       <span class="${st.cls}" data-ksfp="${escapeHtml(k.fingerprint)}">${escapeHtml(catalogMessage(st.id, st.params))}</span>
       <span class="rpmwrap"><input class="sin num" type="number" min="1" max="100000" value="${+k.rpm}" data-rpm="${i}" data-i18n-attr="aria-label:settings.key.rpm"><span class="unitl">rpm</span></span>
       <button class="tog" type="button" aria-pressed="${!!k.enabled}" data-tog="${i}" data-i18n-attr="title:${k.enabled ? 'settings.key.toggle.disable' : 'settings.key.toggle.enable'},aria-label:${k.enabled ? 'settings.key.toggle.disable' : 'settings.key.toggle.enable'}"></button>
-      <button class="dbtn icon kexp" type="button" data-kexp="${i}" data-i18n-attr="title:settings.key.expand,aria-label:settings.key.expand">${PENCIL}</button>
       ${k.guarded
         ? `<span class="klock" data-i18n-attr="title:settings.key.guarded">${LOCK}</span>`
         : `<button class="dbtn icon" data-kdel="${i}" data-i18n-attr="title:settings.key.remove">${TRASH}</button>`}
-      ${rowEditor(k, i)}
     </div>`;
   };
   const secHtml = ([g, idxs]) => {
@@ -234,30 +220,44 @@ function renderAccess() {
     sec.classList.toggle('open');
     el.setAttribute('aria-expanded', sec.classList.contains('open'));
   });
-  for (const el of body.querySelectorAll('[data-kexp]')) el.addEventListener('click', () => {
-    const row = el.closest('[data-keyrow]');
-    row.classList.toggle('kopen');
-  });
-  for (const el of body.querySelectorAll('[data-keditcancel]')) el.addEventListener('click', () => {
-    el.closest('[data-keyrow]').classList.remove('kopen');
-  });
-  for (const el of body.querySelectorAll('[data-kedit]')) el.addEventListener('click', async () => {
-    const i = +el.dataset.kedit;
-    const k = SET.nim_keys[i];
-    const native = body.querySelector(`[data-edit-native="${i}"]`).checked;
-    const base_url = body.querySelector(`[data-edit-base="${i}"]`).value.trim();
-    if (native && !base_url) return note('nk-err', catalogMessage('settings.key.native_needs_endpoint'));
-    const set = {
-      fingerprint: k.fingerprint,
-      native,
-      inject: body.querySelector(`[data-edit-inject="${i}"]`).checked,
-      groups: body.querySelector(`[data-edit-groups="${i}"]`).value.split(/\s*,/).map(t => t.trim()).filter(Boolean),
-    };
-    // Empty endpoint means "inherit the global base_url" — say so explicitly
-    // so saving from the UI never silently rewrites a key's endpoint.
-    set.base_url = base_url || globalUrl;
+  /* Inline edits commit on change like rpm — no drawer, no save button. A
+     native key may never lose its own endpoint; the server would reject it,
+     so pre-check before the round trip. */
+  for (const el of body.querySelectorAll('[data-edit-native]')) el.addEventListener('change', async () => {
+    const i = +el.dataset.editNative;
+    const native = el.checked;
+    if (native && !body.querySelector(`[data-edit-base="${i}"]`).value.trim()) {
+      el.checked = false;
+      return noteMessage('nk-err', 'settings.key.native_needs_endpoint');
+    }
     try {
-      await sPost('/api/settings/nim-keys', { set });
+      await sPost('/api/settings/nim-keys', { set: { fingerprint: SET.nim_keys[i].fingerprint, native } });
+      await loadSettings();
+    } catch (e) { note('nk-err', e.message); }
+  });
+  for (const el of body.querySelectorAll('[data-edit-inject]')) el.addEventListener('change', async () => {
+    const k = SET.nim_keys[+el.dataset.editInject];
+    try {
+      await sPost('/api/settings/nim-keys', { set: { fingerprint: k.fingerprint, inject: el.checked } });
+      await loadSettings();
+    } catch (e) { note('nk-err', e.message); }
+  });
+  for (const el of body.querySelectorAll('[data-edit-base]')) el.addEventListener('change', async () => {
+    const i = +el.dataset.editBase;
+    const k = SET.nim_keys[i];
+    const base_url = el.value.trim();
+    if (body.querySelector(`[data-edit-native="${i}"]`).checked && !base_url)
+      return noteMessage('nk-err', 'settings.key.native_needs_endpoint');
+    try {
+      await sPost('/api/settings/nim-keys', { set: { fingerprint: k.fingerprint, base_url: base_url || globalUrl } });
+      await loadSettings();
+    } catch (e) { note('nk-err', e.message); }
+  });
+  for (const el of body.querySelectorAll('[data-edit-groups]')) el.addEventListener('change', async () => {
+    const k = SET.nim_keys[+el.dataset.editGroups];
+    const groups = el.value.split(/\s*,/).map(t => t.trim()).filter(Boolean);
+    try {
+      await sPost('/api/settings/nim-keys', { set: { fingerprint: k.fingerprint, groups } });
       await loadSettings();
     } catch (e) { note('nk-err', e.message); }
   });

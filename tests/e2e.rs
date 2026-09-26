@@ -5175,10 +5175,10 @@ async fn dashboard_group_settings_markup() {
         "nk-native",
         "nk-inject",
         "nk-groups",
-        "data-kexp",
         "data-ksect",
-        "data-kedit",
+        "ktog",
         "data-edit-base",
+        "data-edit-groups",
         "data-edit-native",
         "data-edit-inject",
         "settings.key.default_pool",
@@ -5188,8 +5188,10 @@ async fn dashboard_group_settings_markup() {
         assert!(settings_js.contains(field), "settings.js carries {field}");
     }
     // The standalone Groups card is gone: keys sit under their first group
-    // label in collapsible sections, and per-key editing lives row-inline.
+    // label in collapsible sections; native/inject ride per-row toggles and
+    // endpoint/groups are change-on-commit row inputs like rpm (no drawer).
     assert!(!settings_js.contains("settings.groups.heading"));
+    assert!(!settings_js.contains("data-kexp"));
     assert!(settings_js.contains(r#"data-i18n="settings.key.default_pool""#));
     assert_eq!(
         catalog["messages"]["settings.key.section_note"],
