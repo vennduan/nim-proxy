@@ -1135,12 +1135,12 @@
       "hash": "5b50e7a6"
     },
     "settings.dialog.delete_user": {
-      "en": "Delete {username}? Their NIM API keys leave the pool and their client API keys are revoked.",
-      "hash": "56bdc932"
+      "en": "Delete {username}? Their API keys leave the pool and their client API keys are revoked.",
+      "hash": "d117529d"
     },
     "settings.dialog.remove_key": {
-      "en": "Remove NIM API key nvapi-••••{last4} from the pool? In-flight requests finish, but its rate-limit window is lost.",
-      "hash": "73435aa0"
+      "en": "Remove API key {mask} from the pool? In-flight requests finish, but its rate-limit window is lost.",
+      "hash": "216436c6"
     },
     "settings.dialog.reset_password": {
       "en": "New password for {username} (at least 10 characters):",
@@ -1171,8 +1171,8 @@
       "hash": "6497cbf6"
     },
     "settings.key.empty": {
-      "en": "No NIM API keys yet — add one below",
-      "hash": "fa52e200"
+      "en": "No API keys yet — add one below",
+      "hash": "0384d75c"
     },
     "settings.key.endpoint": {
       "en": "Endpoint (optional)",
@@ -1181,6 +1181,10 @@
     "settings.key.endpoint_default": {
       "en": "default endpoint",
       "hash": "579b6266"
+    },
+    "settings.key.generic_mask": {
+      "en": "••••{last4}",
+      "hash": "b50f53b3"
     },
     "settings.key.groups": {
       "en": "Group labels, comma-separated",
@@ -1191,16 +1195,16 @@
       "hash": "311c6ec5"
     },
     "settings.key.guarded": {
-      "en": "Protected: the superuser must keep at least one enabled NIM API key. Add or enable another before removing this one.",
-      "hash": "8f84df6b"
+      "en": "Protected: the superuser must keep at least one enabled API key. Add or enable another before removing this one.",
+      "hash": "2096ec2a"
     },
     "settings.key.heading.all": {
-      "en": "NIM API keys",
-      "hash": "11fdda21"
+      "en": "API keys",
+      "hash": "98aae897"
     },
     "settings.key.heading.mine": {
-      "en": "My NIM API keys",
-      "hash": "af1c4f87"
+      "en": "My API keys",
+      "hash": "70cf4f91"
     },
     "settings.key.inject": {
       "en": "stream_options patch",
@@ -1231,8 +1235,8 @@
       "hash": "75081b59"
     },
     "settings.key.placeholder": {
-      "en": "Paste a new NIM API key (nvapi-…)",
-      "hash": "4c922c00"
+      "en": "Paste a new API key",
+      "hash": "92835968"
     },
     "settings.key.pool_note": {
       "en": "Pool: {enabled} enabled · Total: {capacity} rpm",
@@ -1247,8 +1251,8 @@
       "hash": "b6d253bc"
     },
     "settings.key.remove": {
-      "en": "Remove NIM API key",
-      "hash": "d15bafa9"
+      "en": "Remove API key",
+      "hash": "ccec3fcd"
     },
     "settings.key.rpm": {
       "en": "Requests per minute",
@@ -1571,32 +1575,32 @@
       "hash": "6b0cc904"
     },
     "settings.users.nim_key_count.few": {
-      "en": "{n} NIM API keys",
-      "hash": "e964131c"
+      "en": "{n} API keys",
+      "hash": "2083263c"
     },
     "settings.users.nim_key_count.many": {
-      "en": "{n} NIM API keys",
-      "hash": "e964131c"
+      "en": "{n} API keys",
+      "hash": "2083263c"
     },
     "settings.users.nim_key_count.one": {
-      "en": "{n} NIM API key",
-      "hash": "edbe8c52"
+      "en": "{n} API key",
+      "hash": "84bd9e68"
     },
     "settings.users.nim_key_count.other": {
-      "en": "{n} NIM API keys",
-      "hash": "e964131c"
+      "en": "{n} API keys",
+      "hash": "2083263c"
     },
     "settings.users.nim_key_count.two": {
-      "en": "{n} NIM API keys",
-      "hash": "e964131c"
+      "en": "{n} API keys",
+      "hash": "2083263c"
     },
     "settings.users.nim_key_count.zero": {
-      "en": "{n} NIM API keys",
-      "hash": "e964131c"
+      "en": "{n} API keys",
+      "hash": "2083263c"
     },
     "settings.users.note": {
-      "en": "Deleting a user removes their NIM API keys from the pool and revokes their client API keys.",
-      "hash": "10877a46"
+      "en": "Deleting a user removes their API keys from the pool and revokes their client API keys.",
+      "hash": "37568031"
     },
     "settings.users.password_placeholder": {
       "en": "initial password (10+ characters)",
@@ -1647,36 +1651,36 @@
       "hash": "bd14b8f3"
     },
     "settings.validation.models_added.few": {
-      "en": "✓ {n} models found. Adding NIM API key…",
-      "hash": "8325eafc"
+      "en": "✓ {n} models found. Adding API key…",
+      "hash": "d3a75e25"
     },
     "settings.validation.models_added.many": {
-      "en": "✓ {n} models found. Adding NIM API key…",
-      "hash": "8325eafc"
+      "en": "✓ {n} models found. Adding API key…",
+      "hash": "d3a75e25"
     },
     "settings.validation.models_added.one": {
-      "en": "✓ {n} model found. Adding NIM API key…",
-      "hash": "c1e489e4"
+      "en": "✓ {n} model found. Adding API key…",
+      "hash": "c2df09e5"
     },
     "settings.validation.models_added.other": {
-      "en": "✓ {n} models found. Adding NIM API key…",
-      "hash": "8325eafc"
+      "en": "✓ {n} models found. Adding API key…",
+      "hash": "d3a75e25"
     },
     "settings.validation.models_added.two": {
-      "en": "✓ {n} models found. Adding NIM API key…",
-      "hash": "8325eafc"
+      "en": "✓ {n} models found. Adding API key…",
+      "hash": "d3a75e25"
     },
     "settings.validation.models_added.zero": {
-      "en": "✓ {n} models found. Adding NIM API key…",
-      "hash": "8325eafc"
+      "en": "✓ {n} models found. Adding API key…",
+      "hash": "d3a75e25"
     },
     "settings.validation.new_password": {
       "en": "New password must be at least 10 characters.",
       "hash": "cbe2939e"
     },
     "settings.validation.nim_key_required": {
-      "en": "Paste a NIM API key first.",
-      "hash": "45e7e8a4"
+      "en": "Paste an API key first.",
+      "hash": "448710dc"
     },
     "settings.validation.password": {
       "en": "Password must be at least 10 characters.",

@@ -5276,6 +5276,7 @@ async fn dashboard_group_settings_markup() {
         "settings.key.default_pool",
         "settings.key.section_note",
         "settings.key.native_needs_endpoint",
+        "settings.key.generic_mask",
     ] {
         assert!(settings_js.contains(field), "settings.js carries {field}");
     }
@@ -5293,6 +5294,14 @@ async fn dashboard_group_settings_markup() {
         catalog["messages"]["settings.key.native_needs_endpoint"],
         "A native key needs its own endpoint — set the endpoint field."
     );
+    // The key mask is NIM-qualified only for NIM lanes; an own-endpoint key
+    // shows the generic masked tail.
+    assert!(settings_js.contains("nvapi-••••"));
+    assert_eq!(
+        catalog["messages"]["settings.key.generic_mask"],
+        "••••{last4}"
+    );
+    assert_eq!(catalog["messages"]["settings.key.heading.all"], "API keys");
 }
 
 #[tokio::test]

@@ -108,6 +108,9 @@ function renderAccess() {
     }
   };
   const globalUrl = SET.server ? SET.server.base_url : '';
+  const maskFor = (k) => escapeHtml(
+    (k.base_url === globalUrl && globalUrl) ? `nvapi-••••${k.last4}` : catalogMessage('settings.key.generic_mask', { last4: k.last4 })
+  );
   /* Keys sit under their FIRST group label (a key is shown once; wanting it
      in two groups means listing it twice). The empty section is the default
      pool — /v1 routes reach its members, /gN routes do not. */
@@ -124,7 +127,7 @@ function renderAccess() {
     const st = keyState(k);
     return `<div class="krow${k.enabled ? '' : ' koff'}" data-keyrow="${i}">
       <div data-style="min-width:0">
-        <div class="kmask">nvapi-••••${escapeHtml(k.last4)}${ownerChip(k.owner)}</div>
+        <div class="kmask">${maskFor(k)}${ownerChip(k.owner)}</div>
         <div class="kmeta">fp ${escapeHtml(String(k.fingerprint).slice(0, 8))} · ${k.lane != null ? escapeHtml(catalogMessage('settings.key.slot', { n: NUM_GROUPED.format(+k.lane + 1) })) : k.enabled ? escapeHtml(catalogMessage('settings.key.state.unassigned')) : escapeHtml(catalogMessage('settings.key.off'))}</div>
       </div>
       <input class="sin" type="text" data-edit-base="${i}" value="${escapeHtml(k.base_url === globalUrl ? '' : k.base_url)}" placeholder="${escapeHtml(catalogMessage('settings.key.endpoint_default'))}" data-i18n-attr="aria-label:settings.key.endpoint" spellcheck="false" data-style="flex:1;min-width:180px">
@@ -270,7 +273,7 @@ function renderAccess() {
   });
   for (const el of body.querySelectorAll('[data-kdel]')) el.addEventListener('click', async () => {
     const k = SET.nim_keys[+el.dataset.kdel];
-    if (!confirmMessage('settings.dialog.remove_key', { last4: k.last4 })) return;
+    if (!confirmMessage('settings.dialog.remove_key', { mask: maskFor(k) })) return;
     try { await sPost('/api/settings/nim-keys', { remove: k.fingerprint }); await loadSettings(); }
     catch (e) { note('nk-err', e.message); }
   });

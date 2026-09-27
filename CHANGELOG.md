@@ -48,6 +48,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   means "inherit the global base_url"), so legacy keys can get an own
   endpoint or native routing after creation with no drawer or save button.
   The standalone Groups overview card is gone — the grouped list replaced it.
+- Settings key list no longer hard-codes the NIM prefix on every key: a key
+  that inherits the global endpoint (NIM-shaped) shows `nvapi-••••{last4}`
+  as before; an own-endpoint key shows the generic `••••{last4}` mask. The
+  confirmation dialog and the settings copy follow suit ("API keys", not
+  "NIM API keys") on the key-pool surface; the first-run wizard keeps the
+  NIM wording, where the default endpoint is NIM.
 
 - New `POST /v1/messages` Anthropic-compatible bridge: requests are converted
   to the OpenAI chat dialect, paced through the shared key pool exactly like
